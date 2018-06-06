@@ -1,0 +1,5 @@
+*.npy
+np_lstm.py
+np_lstm_reverse.py
+np*.py
+*.pyc
