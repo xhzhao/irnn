@@ -60,7 +60,8 @@ IF (WITH_CPU)
     ENDIF()
 
     ADD_LIBRARY(iRNN SHARED src/gru_xw_inference.cpp src/gru_xw_training.cpp src/rnn_xw_infer.cpp src/lstm_wx_infer.cpp src/lstm_xw_infer.cpp  src/lstm_wx_training.cpp src/lstm_xw_training.cpp)
-    TARGET_LINK_LIBRARIES(iRNN mklml_intel)
+    #TARGET_LINK_LIBRARIES(iRNN mklml_intel)
+    TARGET_LINK_LIBRARIES(iRNN mkl_rt)
 
     add_executable(test_lstm tests/test_lstm.cpp)
     TARGET_LINK_LIBRARIES(test_lstm iRNN)
