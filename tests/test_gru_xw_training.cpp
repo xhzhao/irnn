@@ -2,11 +2,12 @@
 #include <sys/time.h>
 #include <rnn.h>
 #include <mkl.h>
+
 #define count 100
 #define WX_Pattern  0
 #define XW_Pattern  1
 int pattern = 1;
-int num_direction = 2;
+int num_direction = 1;
 void test(
     int batch_size,
     int time_step,
