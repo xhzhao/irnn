@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <assert.h>
 #define UNIDIRECT 1
 #define BIDIRECT 2
 /*
@@ -736,6 +737,13 @@ int  gru_xw_forward(int L,
                     int mode)
 {
     double time[4] = {0,0,0,0}; 
+    assert( (x != NULL) && "gru_xw_forward x is NULL");
+    assert( (hx != NULL) && "gru_xw_forward hx is NULL");
+    assert( (wx != NULL) && "gru_xw_forward wx is NULL");
+    assert( (wh != NULL) && "gru_xw_forward wh is NULL");
+    assert( (y != NULL) && "gru_xw_forward y is NULL");
+    assert( (hy != NULL) && "gru_xw_forward hy is NULL");
+    assert( (ws != NULL) && "gru_xw_forward ws is NULL");
     gru_xw_seq_forward(L, T, D, N, I, H, x, hx, wx, wh, bx, bh, y, hy, ws, time);
 }
 
@@ -791,6 +799,16 @@ int gru_xw_backward( int L,
                      int mode)
 {
     double time[4] = {0,0,0,0};
+    assert( (dy != NULL) && "gru_xw_backward dy is NULL");
+    assert( (dhy != NULL) && "gru_xw_backward dhy is NULL");
+    assert( (x != NULL) && "gru_xw_backward x is NULL");
+    assert( (hx != NULL) && "gru_xw_backward hx is NULL");
+    assert( (wx != NULL) && "gru_xw_backward wx is NULL");
+    assert( (wh != NULL) && "gru_xw_backward wh is NULL");
+    assert( (dx != NULL) && "gru_xw_backward dx is NULL");
+    assert( (dhx != NULL) && "gru_xw_backward dhx is NULL");
+    assert( (dwx != NULL) && "gru_xw_backward dwx is NULL");
+    assert( (dwh != NULL) && "gru_xw_backward dwh is NULL");
     gru_xw_seq_bwd(L, T, D, N, I, H, dy, dhy, x, hx, wx, wh, dx, dhx, dwx, 
       dwh, dbx, dbh, ws, time);
 }

@@ -56,15 +56,74 @@ def get_workspace_size(mode, train, input_size, hidden_size, seq_length,
     #print("workspace_size = %d"% workspace_size)
     return workspace_size
 
-class IRNNFunc(Function):
-    def __init__(self,mode,train,num_layers,batch_sizes,seq_length,input_size,hidden_size,batch_first,dropout,bidirectional,
+class GRUFunc(Function):
+    def __init__(self,mode,train,num_layers,input_size,hidden_size,batch_first,dropout,bidirectional,
                  dropout_state):
-        super(IRNNFunc, self).__init__()
+        super(GRUFunc, self).__init__()
         self.mode = mode
         self.train = train
         self.num_layers = num_layers
-        self.batch_sizes = batch_sizes
-        self.seq_length = seq_length
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.batch_first = batch_first
+        self.dropout = dropout
+        self.bidirectional = bidirectional
+        self.dropout_state = dropout_state
+    def forward(self,input,w_x,w_h,bx,bh,h0,workspace):
+        self.seq_length = input.size()[0]
+        self.batch_sizes = input.size()[1]
+        #print("N = %d, T = %d, I = %d, H = %d" %(self.batch_sizes, self.seq_length, self.input_size, self.hidden_size))
+        self.workspace = workspace
+        self.input = input
+        self.w_x = w_x
+        self.w_h = w_h
+        self.bx = bx
+        self.bh = bh
+        self.h0 = h0
+
+        num_directions = 2 if self.bidirectional else 1
+        self.h_state = torch.zeros(self.seq_length, self.batch_sizes, self.hidden_size * num_directions)
+        self.hy = torch.zeros(self.num_layers*num_directions, self.batch_sizes, self.hidden_size )
+        
+        bias = bx + bh
+
+        if self.train:
+            gru_forward = irnn.pytorch_gru_forward
+            gru_forward(workspace, input, w_x, w_h, bx, bh, h0, self.h_state, 
+              self.hy, self.batch_sizes, self.seq_length, self.input_size, 
+              self.hidden_size, self.num_layers, num_directions)
+        else:
+            gru_inference = irnn.pytorch_gru_infer
+            gru_inference(workspace, input, w_x, w_h, bx, bh, h0, self.h_state, 
+              self.hy, self.batch_sizes, self.seq_length, self.input_size, 
+              self.hidden_size, self.num_layers, num_directions)
+
+        return self.h_state,self.hy
+
+    def backward(self, grad_h_state, grad_hn):
+        num_directions = 2 if self.bidirectional else 1
+        
+        gru_backward = irnn.pytorch_gru_backward
+        self.grad_x = torch.Tensor().resize_as_(self.input)
+        self.grad_h0 = torch.Tensor().resize_as_(self.h0)
+        self.grad_wx = torch.Tensor().resize_as_(self.w_x)
+        self.grad_wh = torch.Tensor().resize_as_(self.w_h)
+        self.grad_bx = torch.Tensor().resize_as_(self.bx)
+        self.grad_bh = torch.Tensor().resize_as_(self.bh)
+        gru_backward(self.num_layers,num_directions,self.seq_length,self.batch_sizes,self.input_size,self.hidden_size,
+            self.workspace,self.input,self.h0,self.h_state,self.w_x,self.w_h,self.bx,self.bh,grad_h_state,grad_hn,self.grad_x,
+                      self.grad_h0,self.grad_wx,self.grad_wh,self.grad_bx,self.grad_bh)
+
+        return self.grad_x,self.grad_wx,self.grad_wh,self.grad_bx,self.grad_bh,self.grad_h0,None
+
+class LSTMFunc(Function):
+    def __init__(self,mode,train,num_layers,input_size,hidden_size,batch_first,dropout,bidirectional,
+                 dropout_state):
+        super(LSTMFunc, self).__init__()
+        self.mode = mode
+        self.train = train
+        self.num_layers = num_layers
+
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.batch_first = batch_first
@@ -72,7 +131,10 @@ class IRNNFunc(Function):
         self.bidirectional = bidirectional
         self.dropout_state = dropout_state
     def forward(self,input,w_x,w_h,bx,bh,h0,c0,workspace):
-        # call rinn/lstm/gru with inferecen/forward
+        #get seq_length from input
+        self.seq_length = input.size()[0]
+        self.batch_sizes = input.size()[1]
+        #print("N = %d, T = %d, I = %d, H = %d" %(self.batch_sizes, self.seq_length, self.input_size, self.hidden_size))
         self.workspace = workspace
         self.input = input
         self.w_x = w_x
@@ -85,85 +147,43 @@ class IRNNFunc(Function):
         num_directions = 2 if self.bidirectional else 1
         self.h_state = torch.Tensor(self.seq_length, self.batch_sizes, self.hidden_size * num_directions)
         self.hy = torch.Tensor(self.num_layers*num_directions, self.batch_sizes, self.hidden_size )
-        self.c_state = torch.Tensor(self.seq_length, self.batch_sizes, self.hidden_size * num_directions) #if self.mode == 'LSTM' else None
-        self.cy = torch.Tensor(self.num_layers*num_directions, self.batch_sizes, self.hidden_size ) #if self.mode == 'LSTM' else None
+        self.c_state = torch.Tensor(self.seq_length, self.batch_sizes, self.hidden_size * num_directions)
+        self.cy = torch.Tensor(self.num_layers*num_directions, self.batch_sizes, self.hidden_size )
         
         bias = bx + bh
 
-        if self.mode == 'RNN_TANH' or self.mode == 'RNN_RELU':
-            tanh = True if self.mode == 'RNN_TANH' else False
-            if self.train:
-                rnn_forward = irnn.pytorch_rnn_forward
-                # rnn_forward(input_size,hidden_size,num_layers,batch_first,dropout,bidirectional,batch_sizes,dropout_state,
-                #            workspace,input,w_x,w_h,bias,h0,h_out,tanh)
-                rnn_forward(workspace, input.data, w_x, w_h, bias, h0.data, self.h_state.data,
-                            self.batch_sizes, self.seq_length, self.input_size, self.hidden_size, self.num_layers)
-            else:
-                rnn_inference = irnn.pytorch_rnn_inference
-        elif self.mode == 'LSTM':
-            if self.train:
-                lstm_forward = irnn.pytorch_lstm_forward
-                lstm_forward(workspace, input, w_x, w_h, bias, h0, c0, self.h_state, self.c_state,self.hy,self.cy,
-                             self.batch_sizes, self.seq_length, self.input_size, self.hidden_size, self.num_layers, self.bidirectional)
+        if self.train:
+            lstm_forward = irnn.pytorch_lstm_forward
+            lstm_forward(workspace, input, w_x, w_h, bias, h0, c0, self.h_state, self.c_state,self.hy,self.cy,
+                         self.batch_sizes, self.seq_length, self.input_size, self.hidden_size, self.num_layers, self.bidirectional)
 
-            else:
-                lstm_inference = irnn.pytorch_lstm_inference
-                #lstm_inference(self.input_size, self.hidden_size, self.num_layers, self.batch_first, self.dropout,
-                #               self.bidirectional, self.batch_sizes,self.dropout_state,
-                #               workspace, input, w_x, w_h, bias, h0, c0, self.h_state, self.c_state)
-                #             workspace,input,w_x,w_h,bias,h0,c0,h_out,c_out)
-                lstm_inference(self.workspace, input, w_x, w_h, bias, h0, c0, self.h_state, self.c_state,
-                               self.batch_sizes, self.seq_length, self.input_size, self.hidden_size, self.num_layers)
-        elif self.mode == 'GRU':
-            if self.train:
-                gru_forward = irnn.pytorch_gru_forward
-                gru_forward(workspace, input, w_x, w_h, bx, bh, h0, self.h_state, 
-                  self.hy, self.batch_sizes, self.seq_length, self.input_size, 
-                  self.hidden_size, self.num_layers, num_directions)
-            else:
-                gru_inference = irnn.pytorch_gru_infer
-                gru_inference(workspace, input, w_x, w_h, bx, bh, h0, self.h_state, 
-                  self.hy, self.batch_sizes, self.seq_length, self.input_size, 
-                  self.hidden_size, self.num_layers, num_directions)
-            #self.hy[0] = self.h_state[self.seq_length-1]
+        else:
+            lstm_inference = irnn.pytorch_lstm_inference
+            lstm_inference(self.workspace, input, w_x, w_h, bias, h0, c0, self.h_state, self.c_state,
+                           self.batch_sizes, self.seq_length, self.input_size, self.hidden_size, self.num_layers)
 
         return self.h_state,self.hy,self.c_state,self.cy
 
     def backward(self, grad_h_state, grad_hn, grad_c_state, grad_cn):
-        #print("grad_h_out sum = ", grad_h_out.sum())
+        #print("    grad_h_state size = ", grad_h_state.size(), grad_h_state.sum())  
+        #print("    grad_hn size = ", grad_hn.size(), grad_hn.sum())                 
+        #print("    grad_c_state size = ", grad_c_state.size(), grad_c_state.sum())  
+        #print("    grad_cn size = ", grad_cn.size(), grad_cn.sum())   
         num_directions = 2 if self.bidirectional else 1
         
-        if self.mode == 'RNN_TANH' or self.mode == 'RNN_RELU':
-            tanh = True if self.mode == 'RNN_TANH' else False
-            print("RNN backward")
-        elif self.mode == 'LSTM':
-            lstm_backward = irnn.pytorch_lstm_backward
-            self.grad_x = torch.Tensor().resize_as_(self.input)
-            self.grad_h0 = torch.Tensor().resize_as_(self.h0)
-            self.grad_c0 = torch.Tensor().resize_as_(self.h0)
-            self.grad_wx = torch.Tensor().resize_as_(self.w_x)
-            self.grad_wh = torch.Tensor().resize_as_(self.w_h)
-            self.grad_bias = torch.Tensor().resize_as_(self.bx)
-            lstm_backward(self.num_layers,num_directions,self.seq_length,self.batch_sizes,self.input_size,self.hidden_size,
-                self.workspace,self.input,self.h0,self.c0,self.h_state,self.c_state,self.w_x,self.w_h,grad_hn,grad_cn,self.grad_x,
-                          self.grad_h0,self.grad_c0,self.grad_wx,self.grad_wh,self.grad_bias)
-            self.grad_bx = self.grad_bias
-            self.grad_bh = self.grad_bias
+        lstm_backward = irnn.pytorch_lstm_backward
+        self.grad_x = torch.Tensor().resize_as_(self.input)
+        self.grad_h0 = torch.Tensor().resize_as_(self.h0)
+        self.grad_c0 = torch.Tensor().resize_as_(self.h0)
+        self.grad_wx = torch.Tensor().resize_as_(self.w_x)
+        self.grad_wh = torch.Tensor().resize_as_(self.w_h)
+        self.grad_bias = torch.Tensor().resize_as_(self.bx)
+        lstm_backward(self.num_layers,num_directions,self.seq_length,self.batch_sizes,self.input_size,self.hidden_size,
+            self.workspace,self.input,self.h0,self.c0,self.h_state,self.c_state,self.w_x,self.w_h,grad_hn,grad_cn,self.grad_x,
+                      self.grad_h0,self.grad_c0,self.grad_wx,self.grad_wh,self.grad_bias)
+        self.grad_bx = self.grad_bias
+        self.grad_bh = self.grad_bias
             
-        elif self.mode == 'GRU':
-            gru_backward = irnn.pytorch_gru_backward
-            self.grad_x = torch.Tensor().resize_as_(self.input)
-            self.grad_h0 = torch.Tensor().resize_as_(self.h0)
-            self.grad_c0 = torch.Tensor().resize_as_(self.h0)
-            self.grad_wx = torch.Tensor().resize_as_(self.w_x)
-            self.grad_wh = torch.Tensor().resize_as_(self.w_h)
-            self.grad_bx = torch.Tensor().resize_as_(self.bx)
-            self.grad_bh = torch.Tensor().resize_as_(self.bh)
-            gru_backward(self.num_layers,num_directions,self.seq_length,self.batch_sizes,self.input_size,self.hidden_size,
-                self.workspace,self.input,self.h0,self.h_state,self.w_x,self.w_h,self.bx,self.bh,grad_h_state,grad_hn,self.grad_x,
-                          self.grad_h0,self.grad_wx,self.grad_wh,self.grad_bx,self.grad_bh)
-            self.grad_c0 = self.grad_h0
-
         return self.grad_x,self.grad_wx,self.grad_wh,self.grad_bx,self.grad_bh,self.grad_h0,self.grad_c0,None,None,None
 
 
@@ -225,6 +245,16 @@ class IRNNBase(Module):
 
         self.flatten_parameters()  #this works only on GPU
         self.reset_parameters()
+
+        # create IRNNFunction
+        if mode == 'LSTM':
+            self.IRNNFunc = LSTMFunc(self.mode,self.training,self.num_layers,self.input_size,self.hidden_size,
+                         self.batch_first,self.dropout,self.bidirectional,self.dropout_state)
+        elif mode == 'GRU':
+            self.IRNNFunc = GRUFunc(self.mode,self.training,self.num_layers,self.input_size,self.hidden_size,
+                         self.batch_first,self.dropout,self.bidirectional,self.dropout_state)
+        
+
 
     def flatten_parameters(self):
         """Resets parameter data pointer so that they can use faster code paths.
@@ -307,14 +337,20 @@ class IRNNBase(Module):
         h0 = hx[0] if self.mode == 'LSTM' else hx
         c0 = hx[1] if self.mode == 'LSTM' else Variable(torch.Tensor())
 
-        _func = IRNNFunc(self.mode,self.training,self.num_layers,batch_size,seq_length,self.input_size,self.hidden_size,
-                         self.batch_first,self.dropout,self.bidirectional,self.dropout_state)
+        _func = self.IRNNFunc
 
-        self.h_state, self.hy, self.c_state, self.cy = _func(input, w_x, w_h, bx, bh, h0, c0, self.workspace)
-        self.h_out = (self.hy,self.cy) if self.mode=='LSTM' else self.hy
-        if is_packed:
-            output = PackedSequence(self.h_state, batch_sizes)
-        return self.h_state, self.h_out
+        if self.mode == 'LSTM':
+            self.h_state, self.hy, self.c_state, self.cy = _func(input, w_x, w_h, bx, bh, h0, c0, self.workspace)
+            self.h_out = (self.hy,self.cy) if self.mode=='LSTM' else self.hy
+            if is_packed:
+                output = PackedSequence(self.h_state, batch_sizes)
+            return self.h_state, self.h_out
+        elif self.mode == 'GRU':
+            self.h_state, self.hy = _func(input, w_x, w_h, bx, bh, h0, self.workspace)
+            if is_packed:
+                output = PackedSequence(self.h_state, batch_sizes)
+            return self.h_state, self.hy
+
 
     def __repr__(self):
         s = '{name}({input_size}, {hidden_size}'
