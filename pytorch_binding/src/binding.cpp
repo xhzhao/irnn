@@ -1,6 +1,6 @@
 #include <iostream>
 #include "rnn.h"
-
+#include <assert.h>
 #include "TH.h"
 
 extern "C"{
@@ -203,6 +203,8 @@ int pytorch_lstm_backward(
         THFloatTensor * grad_wh,        //(D, H, 4H)
         THFloatTensor * grad_bias      //(D, 4H)
         ){
+        assert(workspace != NULL);
+
         lstm_xw_backward(
             getTHBuffer (workspace),
             num_layer,
@@ -330,6 +332,18 @@ int pytorch_gru_backward(
     THFloatTensor * grad_bh      //(D, 4H)
     )
 {
+    assert(workspace != NULL);
+    assert(x != NULL);
+    assert(h0 != NULL);
+    assert(h_out != NULL);
+    assert(w_x != NULL);
+    assert(w_h != NULL);
+    assert(grad_y != NULL);
+    assert(grad_hy != NULL);
+    assert(grad_x != NULL);
+    assert(grad_h0 != NULL);
+    assert(grad_wx != NULL);
+    assert(grad_wh != NULL);
     gru_xw_backward(
         num_layers,
         time_step,
