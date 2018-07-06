@@ -1,28 +1,21 @@
 #!/bin/sh
 #example: ./lstm_xw_training.sh skx
 #example: ./lstm_xw_training.sh skx check
-t=$1
 lscpu
 which python
-export KMP_AFFINITY=compact,1,0,granularity=fine
 
-if [ $t == 'bdw' ]; then
-  export OMP_NUM_THREADS=44
-  python lstm_xw_train.py $2
-fi
-if [ $t == 'knl' ]; then
-  export OMP_NUM_THREADS=68
-  python lstm_xw_train.py $2
-fi
-if [ $t == 'knm' ]; then
-  export OMP_NUM_THREADS=72
-  python lstm_xw_train.py $2
-fi
-if [ $t == 'skx' ]; then
-  export OMP_NUM_THREADS=56
-  python lstm_xw_train.py $2
-fi
-if [ $t == 'i7' ]; then
-  export OMP_NUM_THREADS=8
-  python lstm_xw_train.py $2
-fi
+export KMP_AFFINITY=compact,1,0,granularity=fine                                
+                                                                                
+CORES=`lscpu | grep Core | awk '{print $4}'`                                    
+SOCKETS=`lscpu | grep Socket | awk '{print $2}'`                                
+TOTAL_CORES=`expr $CORES \* $SOCKETS`                                           
+                                                                                
+KMP_SETTING="KMP_AFFINITY=granularity=fine,compact,1,0"                         
+                                                                                
+export OMP_NUM_THREADS=$TOTAL_CORES                                             
+export $KMP_SETTING                                                             
+                                                                                
+echo -e "### using OMP_NUM_THREADS=$TOTAL_CORES"                                
+echo -e "### using $KMP_SETTING\n"   
+
+python lstm_xw_train.py $1 $2 $3 $4

@@ -2,7 +2,7 @@ import time
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-import intelrnn_pytorch as irnn
+import irnn_pytorch as irnn
 import numpy as np
 import sys
 import argparse
@@ -37,28 +37,6 @@ if store_params and load_params:
     raise Exception('You\'re not allowed to store and load parameters at the same time!')
 
 sizes = [
-          [1, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [2, 2, 4, 5], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [2, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [2, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [2, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [2, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [2, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 4, 5, 6], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 4, 5, 6], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 4, 5, 6], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 4, 5, 6], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 4, 5, 6], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-         [64,30,500,500],
-         [64,40,500,500],
-         [64,45,500,500],
-         [64,50,500,500],
-         [20,50,800,800],
          [20,100,800,800],
          [20,150,800,800],
          [20,200,800,800],
@@ -226,20 +204,16 @@ for idx in range(len(sizes)):
 
             #print("ori_output sum = %.4f, opt_output = %.4f" % (ori_output.data.sum(), opt_output.data.sum() ))
     #warm up twice
-    opt_states, (opt_ht, opt_ct) = opt_rnn(opt_input, (opt_h0, opt_c0))
-    opt_output = torch.cat((opt_ht, opt_ct), 0)
-    opt_loss = opt_loss_fn(opt_output, targets)
-    opt_loss.backward()
-    opt_states, (opt_ht, opt_ct) = opt_rnn(opt_input, (opt_h0, opt_c0))
-    opt_output = torch.cat((opt_ht, opt_ct), 0)
-    opt_loss = opt_loss_fn(opt_output, targets)
-    opt_loss.backward()
+    for j in range(10):
+        opt_states, (opt_ht, opt_ct) = opt_rnn(opt_input, (opt_h0, opt_c0))
+        loss = opt_states.sum() + opt_ht.sum() + opt_ct.sum()
+        loss.backward()
     start = time.time()
     for j in range(count):
         opt_states, (opt_ht, opt_ct) = opt_rnn(opt_input, (opt_h0, opt_c0))
-        opt_output = torch.cat((opt_ht, opt_ct), 0)
-        opt_loss = opt_loss_fn(opt_output, targets)
-        opt_loss.backward()
+        #loss = opt_states.sum() + opt_ht.sum() + opt_ct.sum()
+        loss = opt_states.sum()
+        loss.backward()
     dura = (time.time() - start)/count     # time of ONE iteration
     gflops = T*4*(N*H*I*2 + N*H*H*2)/1e9
     GFLOPS = gflops/dura                   # giga floating-point operations per second
