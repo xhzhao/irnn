@@ -8,18 +8,19 @@ import sys
 import util 
 
 import argparse
-parser = argparse.ArgumentParser(description='Process LSTM(xw) args.')
-parser.add_argument('--check', action='store_true', default=False, help='Turn on to enable cosim with original PyTorch LSTM implementation.')
-parser.add_argument('--bidirectional', action='store_true', default=True, help='Enable bi-directional LSTM')
+parser = argparse.ArgumentParser(description='Process GRU(xw) args.')
+parser.add_argument('--check', action='store_true', default=True, help='Turn on to enable cosim with original PyTorch GRU implementation.')
+parser.add_argument('--bidirectional', action='store_true', default=False, help='Enable bi-directional GRU')
 parser.add_argument('--no_bias', action='store_true', default=False, help='GEMM with no bias.')
 parser.add_argument('--count', default=100, type=int)
 parser.add_argument('--forward_only', default=False, action='store_true', help='Enable forward only check')
-parser.add_argument('--num_layers', default=1, type=int, help='Number of LSTM layers.')
+parser.add_argument('--num_layers', default=1, type=int, help='Number of GRU layers.')
 parser.add_argument('--store_parameters', action='store_true', default=False, help='Record all random parameters and store them to .npy files. (for ease of debug)')
 parser.add_argument('--load_parameters', action='store_true', default=False, help='Load stored parameters. (for ease of debug)')
 parser.add_argument('placeholder_for_check', nargs='*')
 
 args = parser.parse_args()
+print("args = ", args)
 
 check = args.check or 'check' in sys.argv
 bidirectional = args.bidirectional
@@ -81,19 +82,19 @@ for idx in range(len(sizes)):
     print("N = ",N," T = ",T," I = ",I," H = ",H," D = ",D)
 
     ori_input = Variable(torch.randn(T, N, I), requires_grad=True)
-    ori_h0 = Variable(torch.randn(D, N, H), requires_grad=True)
+    ori_hx = Variable(torch.randn(D, N, H), requires_grad=True)
     opt_input = Variable(torch.randn(T, N, I), requires_grad=True)
-    opt_h0 = Variable(torch.randn(D, N, H), requires_grad=True)
+    opt_hx = Variable(torch.randn(D, N, H), requires_grad=True)
 
     opt_input.data.copy_(ori_input.data)
-    opt_h0.data.copy_(ori_h0.data)
+    opt_hx.data.copy_(ori_hx.data)
 
     if store_params:
         with open('input.npy', 'wb+') as input_file:
             np.save(input_file, opt_input.data.numpy())
 
-        with open('h0.npy', 'wb+') as h0_file:
-            np.save(h0_file, opt_h0.data.numpy())
+        with open('hx.npy', 'wb+') as hx_file:
+            np.save(hx_file, opt_hx.data.numpy())
 
 
     if load_params:
@@ -102,16 +103,14 @@ for idx in range(len(sizes)):
             opt_input.data.copy_(intput_data)
             ori_input.data.copy_(intput_data)
 
-        with open('h0.npy', 'rb') as h0_file:
-            h0_data = torch.from_numpy(np.load(h0_file))
-            opt_h0.data.copy_(h0_data)
-            ori_h0.data.copy_(h0_data)
+        with open('hx.npy', 'rb') as hx_file:
+            hx_data = torch.from_numpy(np.load(hx_file))
+            opt_hx.data.copy_(hx_data)
+            ori_hx.data.copy_(hx_data)
 
 
     ori_loss_fn = torch.nn.L1Loss()
     opt_loss_fn = torch.nn.L1Loss()
-    #ori_output = Variable(torch.randn(2D, N, H))  # include ht and ct
-    #opt_output = Variable(torch.randn(2, D, N, H))  # include ht and ct
     target_hy = Variable(torch.randn(D, N, H)) # include hy
     target_y = Variable(torch.randn(T, N, H*D)) # include y
     opt_rnn = irnn.GRU(I, H, num_layers, bidirectional=bidirectional, bias=bias)
@@ -141,14 +140,14 @@ for idx in range(len(sizes)):
 
 
         if bidirectional is False:
-            # single directional LSTM
+            # single directional GRU
             model_opt[0].copy_(torch.transpose(model_ori[0],0,1))
             model_opt[1].copy_(torch.transpose(model_ori[1],0,1))
             if bias:
                 model_opt[2].copy_(model_ori[2])
                 model_opt[3].copy_(model_ori[3])
         else:
-            # bidirectional LSTM
+            # bidirectional GRU
             if bias:
                 tmp = torch.Tensor(2, model_ori[0].size(1), model_ori[0].size(0))
                 tmp[0] = torch.transpose(model_ori[0], 0, 1)
@@ -174,81 +173,61 @@ for idx in range(len(sizes)):
                 tmp[1] = torch.transpose(model_ori[3], 0, 1)
                 model_opt[1].copy_(tmp)
         # get original output
-        ori_y, ori_ht = ori_rnn(ori_input, ori_h0)
+        ori_y, ori_hy = ori_rnn(ori_input, ori_hx)
         ori_np = ori_y.data.numpy()
         # get intelrnn output
-        opt_y, opt_ht = opt_rnn(opt_input, opt_h0)
+        opt_y, opt_hy = opt_rnn(opt_input, opt_hx)
         opt_np = opt_y.data.numpy()
         #check result with 1% and 0.0001 tolerance
         rtn_y = np.allclose(ori_np, opt_np, 0.01, 1e-4)
-        rtn_ht = np.allclose(ori_ht.data.numpy(), opt_ht.data.numpy(), 0.01, 1e-4)
-        print("fwd check = ", rtn_y, rtn_ht)
-        if rtn_y is False or rtn_ht is False:
+        rtn_hy = np.allclose(ori_hy.data.numpy(), opt_hy.data.numpy(), 0.01, 1e-4)
+        print("fwd check = ", rtn_y, rtn_hy)
+        if rtn_y is False or rtn_hy is False:
             print("ori_np: {}".format(ori_y))
             print("====================================")
             print("opt_np: {}".format(opt_y))
 
         ori_y.register_hook(save_grad('ori_y'))
         opt_y.register_hook(save_grad('opt_y'))
-        ori_ht.register_hook(save_grad('ori_ht'))
-        opt_ht.register_hook(save_grad('opt_ht'))
+        ori_hy.register_hook(save_grad('ori_hy'))
+        opt_hy.register_hook(save_grad('opt_hy'))
         if forward_only is False:
-            ori_loss_1 = ori_loss_fn(ori_ht, target_hy)
+            ori_loss_1 = ori_loss_fn(ori_hy, target_hy)
             ori_loss_2 = ori_loss_fn(ori_y, target_y)
             ori_loss = ori_loss_1 + ori_loss_2
             ori_loss.backward()
-            opt_loss_1 = opt_loss_fn(opt_ht, target_hy)
+            opt_loss_1 = opt_loss_fn(opt_hy, target_hy)
             opt_loss_2 = opt_loss_fn(opt_y, target_y)
             opt_loss = opt_loss_1 + opt_loss_2
             opt_loss.backward()
             #check result with 1% and 0.0001 tolerance
 
             rtn_x = np.allclose(ori_input.grad.data.numpy(), opt_input.grad.data.numpy(), 0.001, 1e-4)
-            rtn_hx = np.allclose(ori_h0.grad.data.numpy(), opt_h0.grad.data.numpy(), 0.001, 1e-4)
+            rtn_hx = np.allclose(ori_hx.grad.data.numpy(), opt_hx.grad.data.numpy(), 0.001, 1e-4)
 
             rtol = 0.001                                                        
             atol = 1e-4                                                         
                                                                                 
             input_grad_equal = np.allclose(ori_input.grad.data.numpy(), opt_input.grad.data.numpy(), rtol, atol)
-            h0_grad_equal = np.allclose(ori_h0.grad.data.numpy(), opt_h0.grad.data.numpy(), rtol, atol)
+            hx_grad_equal = np.allclose(ori_hx.grad.data.numpy(), opt_hx.grad.data.numpy(), rtol, atol)
             Wx_grad_equal = util.compare_wx_grad(opt_rnn, ori_rnn, bidirectional, bias)
             bx_grad_equal = util.compare_bx_grad(opt_rnn, ori_rnn, bidirectional, bias)
             Wh_grad_equal = util.compare_wh_grad(opt_rnn, ori_rnn, bidirectional, bias)
             bh_grad_equal = util.compare_bh_grad(opt_rnn, ori_rnn, bidirectional, bias)
                                                                                 
                                                                                 
-            name_list  = ['input', 'h0', 'Wx', 'bx', 'Wh', 'bh']          
-            result_list = [input_grad_equal, h0_grad_equal, Wx_grad_equal, bx_grad_equal, Wh_grad_equal, bh_grad_equal]
+            name_list  = ['input', 'hx', 'Wx', 'bx', 'Wh', 'bh']          
+            result_list = [input_grad_equal, hx_grad_equal, Wx_grad_equal, bx_grad_equal, Wh_grad_equal, bh_grad_equal]
             rtn = all(result_list)                                              
             print("bwd check = ", rtn)     
             if rtn is False:
                 print("bwd check = ", result_list)     
-                print("ori_ht.grad sum = %.6f" % (grads['ori_ht'].data.sum()))
-                print("opt_ht.grad sum = %.6f" %(grads['opt_ht'].data.sum()))
+                print("ori_hy.grad sum = %.6f" % (grads['ori_hy'].data.sum()))
+                print("opt_hy.grad sum = %.6f" %(grads['opt_hy'].data.sum()))
                 print("ori_y.grad sum = %.6f" % (grads['ori_y'].data.sum()))
                 print("opt_y.grad sum = %.6f" % (grads['opt_y'].data.sum()))
                 print("ori_input.grad:", ori_input.grad.size(), ori_input.grad.data.sum())
                 print("opt_input.grad:", opt_input.grad.size(), opt_input.grad.data.sum())
-                print("ori_h0.grad:", ori_h0.grad.size(), ori_h0.grad.data.sum())
-                print("opt_h0.grad:", opt_h0.grad.size(), opt_h0.grad.data.sum())
+                print("ori_hx.grad:", ori_hx.grad.size(), ori_hx.grad.data.sum())
+                print("opt_hx.grad:", opt_hx.grad.size(), opt_hx.grad.data.sum())
 
-'''    #warm up twice
-    opt_states, opt_ht = opt_rnn(opt_input, opt_h0)
-    opt_loss = opt_loss_fn(opt_ht, target_hy)
-    opt_loss.backward()
-    opt_states, opt_ht = opt_rnn(opt_input, opt_h0)
-    opt_loss = opt_loss_fn(opt_ht, target_hy)
-    opt_loss.backward()
-
-    start = time.time()
-    for j in range(count):
-        opt_states, opt_ht = opt_rnn(opt_input, opt_h0)
-        opt_loss = opt_loss_fn(opt_ht, target_hy)
-        opt_loss.backward()
-    dura = (time.time() - start)/count     # time of ONE iteration
-    gflops = T*4*(N*H*I*2 + N*H*H*2)/1e9
-    GFLOPS = gflops/dura                   # giga floating-point operations per second
-    SPS = N/dura                           # number of processed sentences per second
-    print("size = %s, duration = %.4f, SPS = %.4f" %(size,1e6*dura/N,SPS))
-
-'''
