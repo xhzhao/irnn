@@ -149,7 +149,7 @@ function(detect_mkl LIBNAME)
     endif()
 endfunction()
 
-detect_mkl("mklml_intel")
+detect_mkl("mkl_rt")
 
 if (NOT HAVE_MKL)
     execute_process(COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/external/prepare_mkl.sh)
