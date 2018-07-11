@@ -36,6 +36,9 @@ if store_params and load_params:
 
 sizes = [
           [1, 2, 1, 1], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
+          [1, 2, 2, 1], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
+          [1, 2, 1, 2], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
+          [1, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
           [2, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
           [3, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
           [3, 4, 5, 6], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
@@ -47,22 +50,22 @@ sizes = [
          [20,100,800,800],
          [20,150,800,800],
          [20,200,800,800],
-         [16,25,512,512],
-         [32,25,512,512],
-         [64,25,512,512],
-         [128,25,512,512],
-         [16,25,1024,1024],
-         [32,25,1024,1024],
-         [64,25,1024,1024],
-         [128,25,1024,1024],
-         [16,25,2048,2048],
-         [32,25,2048,2048],
-         [64,25,2048,2048],
-         [128,25,2048,2048],
-         [16,25,4096,4096],
-         [32,25,4096,4096],
-         [64,25,4096,4096],
-         [128,25,4096,4096],
+#         [16,25,512,512],
+#         [32,25,512,512],
+#         [64,25,512,512],
+#         [128,25,512,512],
+#         [16,25,1024,1024],
+#         [32,25,1024,1024],
+#         [64,25,1024,1024],
+#         [128,25,1024,1024],
+#         [16,25,2048,2048],
+#         [32,25,2048,2048],
+#         [64,25,2048,2048],
+#         [128,25,2048,2048],
+#         [16,25,4096,4096],
+#         [32,25,4096,4096],
+#         [64,25,4096,4096],
+#         [128,25,4096,4096],
         ]
 #sizes = [[2,2,3,4]]
 grads = {}
@@ -91,6 +94,10 @@ for idx in range(len(sizes)):
     opt_input.data.copy_(ori_input.data)
     opt_hx.data.copy_(ori_hx.data)
     opt_cx.data.copy_(ori_cx.data)
+
+    #print("ori_input sum = ", ori_input.sum())
+    #print("ori_hx sum = ", ori_hx.sum())
+    #print("ori_cx sum = ", ori_cx.sum())
 
     if store_params:
         with open('input.npy', 'wb+') as input_file:
@@ -188,9 +195,11 @@ for idx in range(len(sizes)):
         rtn_cy = np.allclose(ori_cy.data.numpy(), opt_cy.data.numpy(), 0.01, 1e-4)
         print("fwd check = ", rtn_y, rtn_hy, rtn_cy)
         if rtn_y is False or rtn_hy is False:
-            print("ori_np: {}".format(ori_y))
+            print("ori_y_np: {}".format(ori_y))
+            print("opt_y_np: {}".format(opt_y))
             print("====================================")
-            print("opt_np: {}".format(opt_y))
+            print("ori_hy_np: {}".format(ori_hy))
+            print("opt_hy_np: {}".format(opt_hy))
 
         ori_y.register_hook(save_grad('ori_y'))
         opt_y.register_hook(save_grad('opt_y'))
@@ -240,4 +249,6 @@ for idx in range(len(sizes)):
                 print("opt_input.grad:", opt_input.grad.size(), opt_input.grad.data.sum())
                 print("ori_hx.grad:", ori_hx.grad.size(), ori_hx.grad.data.sum())
                 print("opt_hx.grad:", opt_hx.grad.size(), opt_hx.grad.data.sum())
+                print("ori_cx.grad:", ori_cx.grad.size(), ori_cx.grad.data.sum())
+                print("opt_cx.grad:", opt_cx.grad.size(), opt_cx.grad.data.sum())
 

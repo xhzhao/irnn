@@ -290,7 +290,7 @@ void gru_xw_seq_infer(int L, int T, int D, int N, int I, int H,
  *        (Currently, there is only sequential version.)
  *
  */
-
+/*
 int  gru_xw_infer(int L,
                   int T,
                   int D,
@@ -309,6 +309,11 @@ int  gru_xw_infer(int L,
                   int mode)
 {
     gru_xw_seq_infer(L, T, D, N, I, H, x, hx, wx, wh, bx, bh, y, hy, ws);
+}
+*/
+int gru_xw_infer(RNNForwardDesc desc){
+    gru_xw_seq_infer(desc.L, desc.T, desc.D, desc.N, desc.I, desc.H, desc.x,
+        desc.hx, desc.wx, desc.wh, desc.bx, desc.bh, desc.y, desc.hy, desc.ws);
 }
 
 

@@ -460,6 +460,17 @@ extern "C" {
         return 0;
     }
 
+
+int lstm_xw_infer(RNNForwardDesc desc){
+    //switch(desc.algo) {
+    //lstm_xw_sequential_forward(desc.ws, desc.N, desc.T, desc.I, desc.H, desc.D,
+    //    desc.x, desc.hx, desc.cx, desc.wx, desc.wh, desc.bx, desc.hy, desc.cy);
+    return 0;
+
+}
+
+
+/*
     // lstm c interface
     // I: input dimension
     // H: hidden size
@@ -548,7 +559,7 @@ extern "C" {
        mkl_free(lstm_han);
        return 0;
     }
-
+*/
     int lstm_xw_infer_get_workspace_size(int input_dim, int hid, int max_time_step, int max_batch_size)
     {
         int max_ws = 16 * max_time_step * sizeof (float*) + (max_time_step * 4 * max_batch_size * hid 

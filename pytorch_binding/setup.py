@@ -6,7 +6,7 @@ from distutils.core import setup
 
 from torch.utils.ffi import create_extension
 
-extra_compile_args = ['-std=c++11', '-std=c99', '-fPIC']
+extra_compile_args = ['-std=c++11', '-fPIC']
 iRNN_path = "../build"
 
 
@@ -44,7 +44,7 @@ setup(
     version="0.1",
     description="PyTorch wrapper for irnn",
     url="https://github.com/xhzhao/irnn",
-    author="Xiaohui zhao, Patric zhao",
+    author="Xiaohui zhao, Qidu he, Shu zhang",
     author_email="Xiaohui.zhao@intel.com",
     license="Apache",
     packages=["irnn_pytorch"],

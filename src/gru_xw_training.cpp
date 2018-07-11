@@ -10,8 +10,7 @@
 #include <math.h>
 #include <string.h>
 #include <assert.h>
-#define UNIDIRECT 1
-#define BIDIRECT 2
+
 /*
  * @brief:  gru_forward_single_sequential
  *          single layer forward computation 
@@ -719,6 +718,8 @@ void gru_xw_seq_bwd(int L, int T, int D, int N, int I, int H,
  *
  */
 
+/*
+
 int  gru_xw_forward(int L,
                     int T,
                     int D,
@@ -745,6 +746,15 @@ int  gru_xw_forward(int L,
     assert( (hy != NULL) && "gru_xw_forward hy is NULL");
     assert( (ws != NULL) && "gru_xw_forward ws is NULL");
     gru_xw_seq_forward(L, T, D, N, I, H, x, hx, wx, wh, bx, bh, y, hy, ws, time);
+}
+*/
+
+int gru_xw_forward(RNNForwardDesc desc){
+
+    double time[4] = {0,0,0,0}; 
+    gru_xw_seq_forward(desc.L, desc.T, desc.D, desc.N, desc.I, desc.H, desc.x,
+        desc.hx, desc.wx, desc.wh, desc.bx, desc.bh, desc.y, desc.hy, desc.ws,
+        time);
 }
 
 
@@ -777,6 +787,7 @@ int  gru_xw_forward(int L,
  *        (Currently, there is only sequential version.)
  *
  */
+/*
 int gru_xw_backward( int L,
                      int T,
                      int D,
@@ -811,7 +822,17 @@ int gru_xw_backward( int L,
     assert( (dwh != NULL) && "gru_xw_backward dwh is NULL");
     gru_xw_seq_bwd(L, T, D, N, I, H, dy, dhy, x, hx, wx, wh, dx, dhx, dwx, 
       dwh, dbx, dbh, ws, time);
+}*/
+
+int gru_xw_backward(RNNBackwardDesc desc){
+
+    double time[4] = {0,0,0,0};
+    gru_xw_seq_bwd(desc.L, desc.T, desc.D, desc.N, desc.I, desc.H, desc.dy, 
+        desc.dhy, desc.x, desc.hx, desc.wx, desc.wh, desc.dx, desc.dhx,
+        desc.dwx, desc.dwh, desc.dbx, desc.dbh, desc.ws, time);
+    
 }
+
 
 /*
  * @brief:  gru_xw_forward_prof

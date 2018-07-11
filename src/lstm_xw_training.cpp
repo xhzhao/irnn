@@ -5,557 +5,528 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include "rnn.h"
 
 extern "C" {
 inline float sigmoid(float x){
     return 1.0f / (1.0f + exp(-x));
 }
 
-int lstm_xw_train_get_workspace_size(const int I, const int H, const int T, const int N, const int bidirectional) {
-    int D = bidirectional ? 2 : 1;
-    int forward_size = D * (T + 1) * N * 4 * H + 2 * D * N * H;
-    // int backward_size = T * N * H * 9;
-    int backward_size = D * (T + 1) * N * 4 * H + D * T * N * 4 * H + D * T * N * H;
-    return forward_size > backward_size ? forward_size : backward_size;
-}
-
-//
-// Reorder the initial hidden layer: (D, N, H) => (N, D, H).
-// 
-// We have to do this because LSTM's final result has a format of (T, N, D*H), 
-// so (N, D, H) is more convienent in computation.
-//
-float *
-reorder_hidden(const float *h0, float *dest, int d, int n, int h)
-{
-    float (*ori_h0)[n][h] = (float (*)[n][h])h0;
-    float (*new_h0)[d][h] = (float (*)[d][h])dest;
-
-    assert(new_h0 != NULL);
-
-    int d_index, n_index, h_index;
-    for (d_index = 0; d_index < d; d_index ++) {
-        for (n_index = 0; n_index < n; n_index ++) {
-            // this is the start address of a size "h" block, let's compute it's new address.
-            float *current_location = (float *)(ori_h0[d_index][n_index]);
-            float *new_location = (float *)(new_h0[n_index][d_index]);
-            memcpy(new_location, current_location, h * sizeof(float));
-        }
-    }
-
-    return (float *)new_h0;
-}
-
-int lstm_xw_sequential_forward(void* buf,
-                               const int N,                         // batch size
-                               const int T,                         // time_step(seq_len)
-                               const int I,                         // input size
-                               const int H,                         // hidden size
-                               const int bidirectional,             // enable bidirectional
-                               const float* x,                      // (T, N, I)
-                               const float* h_0,                    // (D, N, H)
-                               const float* c_0,                    // (D, N, H)
-                               const float* wx,                     // (D, I, 4*H)      
-                               const float* wh,                     // (D, H, 4*H)      
-                               const float* bias,                   // (D * 4H),   because bx == bh, so just need one
-                               float* h_out,                        // (T, N, H*D)
-                               float* c_out                         // (T, N, H*D)
-                               ) {
-#if ENABLE_OMP_SETTING
-    #pragma omp parallel default(shared)
-    {
-        int ompTid = omp_get_thread_num();
-        int numomp = omp_get_num_threads();
-        int numprc = omp_get_num_procs();
-        int ompmax = omp_get_max_threads();
-        kmp_affinity_mask_t new_omp_mask;
-        kmp_create_affinity_mask(&new_omp_mask);
-        kmp_set_affinity_mask_proc(ompTid, &new_omp_mask);
-        kmp_set_affinity_mask_proc(ompTid + ompmax, &new_omp_mask);
-        if (kmp_set_affinity(&new_omp_mask) != 0)
-        {
-            printf("Error: kmp_set_affinity(%d, &new_omp_mask)\n", ompTid);
-        }
-    }
-#endif
-    MKL_INT gemm_m = T*N, gemm_n = 4*H, gemm_k = I; 
-    MKL_INT lda = gemm_k, ldb = gemm_n, ldc = gemm_n; 
-    MKL_INT num_directions = bidirectional ? 2 : 1;
-
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, gemm_m, gemm_n, gemm_k, 1.0f, x, lda, wx, ldb, 0.0f, (float*)buf, ldc); 
-
-    // Format h0 and c0, for the ease of computation.
-    const float *internal_h_0 = h_0;
-    const float *internal_c_0 = c_0;
-    if (bidirectional) {
-        internal_h_0 = reorder_hidden(h_0, (float *)buf + 2 * (T + 1) * N * 4 * H, num_directions, N, H);
-        internal_c_0 = reorder_hidden(c_0, (float *)buf + 2 * (T + 1) * N * 4 * H + num_directions * N * H, num_directions, N, H);
-    }
-    
-    //
-    // Prepare buffer for "forward" LSTM layer:
-    //
-
-    //[ix|gx|fx|ox] : [T*N, 4H]
-    float (*ix)[gemm_n] = (float(*)[gemm_n])buf; 
-    float (*fx)[gemm_n] = (float(*)[gemm_n])((float*)ix + H);
-    float (*gx)[gemm_n] = (float(*)[gemm_n])((float*)fx + H); 
-    float (*ox)[gemm_n] = (float(*)[gemm_n])((float*)gx + H);
-
-    // [ih|fh|gh|oh]: [N, 4H]
-    float (*ih)[gemm_n] = ix + gemm_m;
-    float (*fh)[gemm_n] = fx + gemm_m;
-    float (*gh)[gemm_n] = gx + gemm_m; 
-    float (*oh)[gemm_n] = ox + gemm_m;
-    float *h_buf = (float*)ih;
-
-    const float *bi = bias;
-    const float *bf = bi + H;
-    const float *bg = bf + H;
-    const float *bo = bg + H;
-    const float *h_pre = internal_h_0;
-    const float (*c_pre)[num_directions * H] = (const float(*)[num_directions * H])internal_c_0;
-    float (*c)[num_directions * H] = (float(*)[num_directions * H])c_out;
-    float (*h)[num_directions * H] = (float(*)[num_directions * H])h_out;
-
-    //
-    // Prepare buffer for "backward" LSTM layer:
-    //
-
-    float (*ix_reverse)[gemm_n] = NULL;
-    float (*fx_reverse)[gemm_n] = NULL;
-    float (*gx_reverse)[gemm_n] = NULL;
-    float (*ox_reverse)[gemm_n] = NULL;
-    float (*ih_reverse)[gemm_n] = NULL;
-    float (*fh_reverse)[gemm_n] = NULL;
-    float (*gh_reverse)[gemm_n] = NULL;
-    float (*oh_reverse)[gemm_n] = NULL;
-    float *h_reverse_buf = NULL;
-    const float *bi_reverse = NULL;
-    const float *bf_reverse = NULL;
-    const float *bg_reverse = NULL;
-    const float *bo_reverse = NULL;
-    const float *h_pre_reverse = NULL;
-    const float (*c_pre_reverse)[2 * H] = NULL;
-    float (*c_reverse)[2 * H] = NULL;
-    float (*h_reverse)[2 * H] = NULL;
-
-    if (bidirectional) {
-        ix_reverse = ih + N;
-        fx_reverse = fh + N;
-        gx_reverse = gh + N;
-        ox_reverse = oh + N;
-
-        ih_reverse = ix_reverse + gemm_m;
-        fh_reverse = fx_reverse + gemm_m;
-        gh_reverse = gx_reverse + gemm_m;
-        oh_reverse = ox_reverse + gemm_m;
-
-        h_reverse_buf = (float *)ih_reverse;
-
-        bi_reverse = bi + 4 * H;
-        bf_reverse = bf + 4 * H;
-        bg_reverse = bg + 4 * H;
-        bo_reverse = bo + 4 * H;
-
-        h_pre_reverse = (float *)internal_h_0 + H;
-        c_pre_reverse = (const float(*)[2 * H])((float *)internal_c_0 + H);
-
-        c_reverse = (float (*)[2 * H])((float *)c + H);
-        h_reverse = (float (*)[2 * H])((float *)h + H);
-    }
-
-    //
-    // x * wx_reverse
-    //
-    const float *wx_reverse = NULL;
-    const float *wh_reverse = NULL;
-    if (bidirectional) {
-        wx_reverse = wx + I * 4 * H;
-
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, gemm_m, gemm_n, gemm_k, 1.0f, x, lda, wx_reverse, ldb, 0.0f, (float*)buf + (T + 1) * N * 4 * H, ldc);
-        
-        wh_reverse = wh + H * 4 * H;
-    }
+void lstm_forward_single_sequential(int T, int D, int N, int I, int H, 
+    float* ws,   //
+    float* x,    //[T,N,H*D]
+    float* hx,   //[D*N,H]
+    float* cx,   //[D*N,H]
+    float* wx,   //D*I*4H
+    float* wh,   //D*H*4H
+    float* bx, //D*4H
+    float* y,    //[T,N,H*D]
+    float* hy,   //[D*N,H]
+    float* cy,   //[D*N,H]
+    float* gateI,//(L*)D*T*N*H
+    float* gateF,//(L*)D*T*N*H
+    float* gateG,//(L*)D*T*N*H
+    float* gateO,//(L*)D*T*N*H
+    float* gateC//(L*)[T,N,D,H]
+){
+    int m = N;
+    int n = 4*H;
+    int k = I;
+    float* ht = y;
+    float* ht_1 = y;
+    float* back_ht_1 = y + (T - 1) * N * H * D + H;
+    float* back_ht = back_ht_1;
+    float* ct = gateC;
+    float* ct_1 = gateC;
+    float* back_ct_1 = gateC + (T - 1) * N * H * D + H;
+    float* back_ct = back_ct_1;
 
 
-
-    int i = 0, j = 0, k = 0;
-
-    if (bi != NULL) {
-        
-        // "Forward" (non-reversed) LSTM layer. 
-        
-        for (i = 0; i < gemm_m; i += N) {
-            //h_t-1 * wh
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, N, gemm_n, H, 1.0f, h_pre, num_directions * H, wh, ldb, 0.0f, h_buf, ldc);
-            #pragma omp parallel for collapse(2)
-            for (j = 0; j < N; ++j) {
-                for (k = 0; k < H; ++k) {
-                    ix[i+j][k] = sigmoid(ix[i+j][k] + ih[j][k] + bi[k]);
-                    fx[i+j][k] = sigmoid(fx[i+j][k] + fh[j][k] + bf[k]);
-                    gx[i+j][k] =    tanh(gx[i+j][k] + gh[j][k] + bg[k]);
-                    ox[i+j][k] = sigmoid(ox[i+j][k] + oh[j][k] + bo[k]);
-                    c[i+j][k] = c_pre[j][k] * fx[i+j][k] + ix[i+j][k] * gx[i+j][k];
-                    h[i+j][k] = ox[i+j][k] * tanh(c[i+j][k]);
-                }
-            }
-            c_pre = c + i;
-            h_pre = (float*)(h + i);
-        }
-        
-        // "Backward" (reversed) LSTM layer.
-
-        if (bidirectional) {
-            for (i = gemm_m - N; i >= 0; i -= N) {
-                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, N, gemm_n, H, 1.0f, h_pre_reverse, num_directions * H, wh_reverse, ldb, 0.0f, h_reverse_buf, ldc);
-                #pragma omp parallel for collapse(2)
-                for (j = 0; j < N; ++j) {
-                    for (k = 0; k < H; ++k) {
-                        ix_reverse[i+j][k] = sigmoid(ix_reverse[i+j][k] + ih_reverse[j][k] + bi_reverse[k]);
-                        fx_reverse[i+j][k] = sigmoid(fx_reverse[i+j][k] + fh_reverse[j][k] + bf_reverse[k]);
-                        gx_reverse[i+j][k] =    tanh(gx_reverse[i+j][k] + gh_reverse[j][k] + bg_reverse[k]);
-                        ox_reverse[i+j][k] = sigmoid(ox_reverse[i+j][k] + oh_reverse[j][k] + bo_reverse[k]);
-                        c_reverse[i+j][k] = c_pre_reverse[j][k] * fx_reverse[i+j][k] + ix_reverse[i+j][k] * gx_reverse[i+j][k];
-                        h_reverse[i+j][k] = ox_reverse[i+j][k] * tanh(c_reverse[i+j][k]);
-                    }
-                }
-
-                c_pre_reverse = c_reverse + i;
-                h_pre_reverse = (float *)(h_reverse + i);
-            }
-        }
-    } else {
-        for (i = 0; i < gemm_m; i += N) {
-            //h_t-1 * wh
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, N, gemm_n, H, 1.0f, h_pre, num_directions * H, wh, ldb, 0.0f, h_buf, ldc);
-            #pragma omp parallel for collapse(2)
-            for (j = 0; j < N; ++j) {
-                for (k = 0; k < H; ++k) {
-                    ix[i+j][k] = sigmoid(ix[i+j][k] + ih[j][k]);
-                    fx[i+j][k] = sigmoid(fx[i+j][k] + fh[j][k]);
-                    gx[i+j][k] =    tanh(gx[i+j][k] + gh[j][k]);
-                    ox[i+j][k] = sigmoid(ox[i+j][k] + oh[j][k]);
-                    c[i+j][k] = c_pre[j][k] * fx[i+j][k] + ix[i+j][k] * gx[i+j][k];
-                    h[i+j][k] = ox[i+j][k] * tanh(c[i+j][k]);
-                }
-            }
-            c_pre = c + i;
-            h_pre = (float*)(h + i);
-        }
-
-        if (bidirectional) {
-            for (i = gemm_m - N; i >= 0; i -= N) {
-                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, N, gemm_n, H, 1.0f, h_pre_reverse, num_directions * H, wh_reverse, ldb, 0.0f, h_reverse_buf, ldc);
-                #pragma omp parallel for collapse(2)
-                for (j = 0; j < N; ++j) {
-                    for (k = 0; k < H; ++k) {
-                        ix_reverse[i+j][k] = sigmoid(ix_reverse[i+j][k] + ih_reverse[j][k]);
-                        fx_reverse[i+j][k] = sigmoid(fx_reverse[i+j][k] + fh_reverse[j][k]);
-                        gx_reverse[i+j][k] =    tanh(gx_reverse[i+j][k] + gh_reverse[j][k]);
-                        ox_reverse[i+j][k] = sigmoid(ox_reverse[i+j][k] + oh_reverse[j][k]);
-                        c_reverse[i+j][k] = c_pre_reverse[j][k] * fx_reverse[i+j][k] + ix_reverse[i+j][k] * gx_reverse[i+j][k];
-                        h_reverse[i+j][k] = ox_reverse[i+j][k] * tanh(c_reverse[i+j][k]);
-                    }
-                }
-
-                c_pre_reverse = c_reverse + i;
-                h_pre_reverse = (float *)(h_reverse + i);
-            }
-        }
-    }
-
-    return 0;
-}
-int lstm_xw_sequential_backward(void* buf,
-                                const int N,                // batch size
-                                const int T,                // time_step(seq_len)
-                                const int I,                // input size
-                                const int H,                // hidden size
-                                const int D,                // num of directions
-                                const float* x,             // (T, N, I)
-                                const float* h_0,           // (D, N, H)
-                                const float* c_0,           // (D, N, H)
-                                const float* wx,            // (D, I, 4*H)      
-                                const float* wh,            // (D, H, 4*H)      
-                                const float* h_state,       // (T, N, H*D)
-                                const float* c_state,       // (T, N, H*D)
-                                const float* grad_hy,       // (D, N, H)
-                                const float* grad_cy,       // (D, N, H) 
-                                float* dwx,                 // (D, I, 4*H)
-                                float* dwh,                 // (D, H, 4*H)
-                                float* db,                  // (D * 4H)
-                                float* dx,                  // (T, N, I)
-                                float* dh0,                 // (D, N, H)
-                                float* dc0                  // (D, N, H)
-                                ) {
-
-#if ENABLE_OMP_SETTING
-    #pragma omp parallel default(shared)
-    {
-        int ompTid = omp_get_thread_num();
-        int numomp = omp_get_num_threads();
-        int numprc = omp_get_num_procs();
-        int ompmax = omp_get_max_threads();
-        //printf("ompmax:%d\n", ompmax);
-        kmp_affinity_mask_t new_omp_mask;
-        kmp_create_affinity_mask(&new_omp_mask);
-        kmp_set_affinity_mask_proc(ompTid, &new_omp_mask);
-        kmp_set_affinity_mask_proc(ompTid + ompmax, &new_omp_mask);
-        if (kmp_set_affinity(&new_omp_mask) != 0)
-        {
-            printf("Error: kmp_set_affinity(%d, &new_omp_mask)\n", ompTid);
-        }
-    }
-#endif
-    MKL_INT gemm_m = T * N, gemm_n = 4 * H;
-    memset(dwh, 0, sizeof(float) * D * H * gemm_n);
-    if (db != NULL) {
-        memset(db, 0, sizeof(float) * D * gemm_n);
-    }
-    memset(dh0, 0, sizeof(float) * D * N * H);
-
-    //
-    // Variables for bidirectional LSTM's "forward" path:
-    //
-
-    // [ix|gx]fx|ox]: (T*N, 4*H)
-    float (*it)[gemm_n] = (float(*)[gemm_n])buf;
-    float (*ft)[gemm_n] = (float(*)[gemm_n])((float*)it + H);
-    float (*gt)[gemm_n] = (float(*)[gemm_n])((float*)ft + H);
-    float (*ot)[gemm_n] = (float(*)[gemm_n])((float*)gt + H);
-
-    // [cout] = [ct|ct_reverse]
-    const float (*ct)[D * H] = (float(*)[D * H])c_state;
-    // [hout] = [ht|ht_reverse]
-    const float (*ht)[D * H] = (float(*)[D * H])h_state;
-
-    //[di|dg|df|do] : size=[T*N, 4*H]
-    float (*deta_i)[gemm_n] = (float(*)[gemm_n])((float *)buf + D * (T + 1) * N * 4 * H);
-    float (*deta_f)[gemm_n] = (float(*)[gemm_n])((float *)deta_i + H);
-    float (*deta_g)[gemm_n] = (float(*)[gemm_n])((float *)deta_f + H);
-    float (*deta_o)[gemm_n] = (float(*)[gemm_n])((float *)deta_g + H);
-
-    //dc:[T*N, H]
-    float (*deta_c)[H] = (float(*)[H])(deta_i + gemm_m);
-
-    //dh: (N, H)
-    float (*deta_h)[H] = (float(*)[H])dh0;
-
-
-
-    //
-    // Variables for bidirectional LSTM's "backward(reverse)" path:
-    //
-
-    // [ix_reverse|gx_reverse|fx_reverse|ox_reverse]: (T*N, 4*H)
-    float (*it_reverse)[gemm_n] = NULL;
-    float (*ft_reverse)[gemm_n] = NULL;
-    float (*gt_reverse)[gemm_n] = NULL;
-    float (*ot_reverse)[gemm_n] = NULL;
-
-    const float (*ct_reverse)[D * H] = NULL;
-    const float (*ht_reverse)[D * H] = NULL;
-
-    float (*deta_i_reverse)[gemm_n] = NULL;
-    float (*deta_f_reverse)[gemm_n] = NULL;
-    float (*deta_g_reverse)[gemm_n] = NULL;
-    float (*deta_o_reverse)[gemm_n] = NULL;
-
-    float (*deta_c_reverse)[H] = NULL;
-    float (*deta_h_reverse)[H] = NULL;
-
-    if (D == 2) {
-        it_reverse = (float(*)[gemm_n])((float *)buf + (T + 1) * N * 4 * H);
-        ft_reverse = (float(*)[gemm_n])((float *)it_reverse + H);
-        gt_reverse = (float(*)[gemm_n])((float *)ft_reverse + H);
-        ot_reverse = (float(*)[gemm_n])((float *)gt_reverse + H);
-
-        deta_i_reverse = deta_i + gemm_m;
-        deta_f_reverse = deta_f + gemm_m;
-        deta_g_reverse = deta_g + gemm_m;
-        deta_o_reverse = deta_o + gemm_m;
-
-        ct_reverse = (float(*)[D * H])(c_state + H);
-        ht_reverse = (float(*)[D * H])(h_state + H);
-
-        deta_c_reverse = (float (*)[H])(deta_i_reverse + gemm_m);
-        deta_h_reverse = (float (*)[H])(dh0 + N * H);
-
-    }
-
-    //
-    // Compute derivation of bidirectional LSTM's "forward" path:
-    //
-
-    int i = 0, j = 0, k = 0;
-    
-    float tc = 0.0f;                                                                                                                                                                                              
-    for (i = gemm_m - N; i >= 0; i -= N) {
+    float* gemmC1  = ws;              // [D,T,N,4H]
+    float* gemmC2  = gemmC1 + D * T * N * 4 * H;  // N*4H
+    float* it = gateI;
+    float* ft = gateF;
+    float* gt = gateG;
+    float* ot = gateO;
+    float* back_wx = wx + I * 4 * H;
+    float* back_wh = wh + H * 4 * H;
+    float* back_bx = (bx != NULL)? bx + 4 * H : NULL;
+    float* back_gateI = gateI + T * N * H;
+    float* back_gateF = gateF + T * N * H;
+    float* back_gateG = gateG + T * N * H;
+    float* back_gateO = gateO + T * N * H;
+    float* back_gemmC1 = gemmC1 + T * N * 4 * H;
+    float* gemmC1_t = gemmC1;
+    if (D == UNIDIRECT) {
         #pragma omp parallel for collapse(2)
-        for (j = 0; j < N; ++j) {
-            for (k = 0; k < H; ++k) {
-                tc = tanh(ct[i+j][k]);
-                if (i == gemm_m - N) {
-                    deta_h[j][k] = grad_hy[j*H+k];
-                    deta_c[i+j][k] = deta_h[j][k] * ot[i+j][k] * (1 - tc * tc) + grad_cy[j*H+k];
-                }
-                else {
-                    deta_c[i+j][k] = deta_h[j][k] * ot[i+j][k] * (1 - tc * tc) + deta_c[i+j+N][k] * ft[i+j+N][k];
-                }
-                deta_i[i+j][k] = deta_c[i+j][k] * gt[i+j][k] * it[i+j][k] * (1 - it[i+j][k]);
-                deta_g[i+j][k] = deta_c[i+j][k] * it[i+j][k] * (1 - gt[i+j][k] * gt[i+j][k]);
-                deta_o[i+j][k] = deta_h[j][k] * tc * ot[i+j][k] * (1 - ot[i+j][k]);
-                if (i != 0) {
-                    deta_f[i+j][k] = deta_c[i+j][k] * ct[i+j-N][k] * ft[i+j][k] * (1 - ft[i+j][k]);
-                }
-                else {
-                    dc0[j*H + k] = deta_c[j][k] * ft[j][k];
-                    deta_f[j][k] = deta_c[j][k] * c_0[j*H+k] * ft[j][k] * (1 - ft[j][k]);
-                }
+        for (int i = 0; i < N; i++)
+            for (int j = 0; j < H; j++) {
+                ht[i * H + j] = hx[i * H + j];
+                ct[i * H + j] = cx[i * H + j];
             }
-        }
-
-        if (i != 0) {
-            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, gemm_n, N, 1.0f, (float*)(ht+i-N), D * H, (float*)(deta_i+i), gemm_n, 1.0f, dwh, gemm_n);
-        }
-        else {
-            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, gemm_n, N, 1.0f, h_0, H, (float*)(deta_i+i), gemm_n, 1.0f, dwh, gemm_n);
-        }
-
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N, H, gemm_n, 1.0f, (float*)(deta_i+i), gemm_n, wh, gemm_n, 0.0f, dh0, H);
-    }
-
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, gemm_m, I, gemm_n, 1.0f, (float*)(deta_i), gemm_n, wx, gemm_n, 0.0f, dx, I);
-    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, I, gemm_n, gemm_m, 1.0f, x, I, (float*)(deta_i), gemm_n, 0.0f, dwx, gemm_n);
-    
-    if (db != NULL)
-    {
-        for(i = 0; i < gemm_m; ++i) {
-            for (j = 0; j < gemm_n; ++j) {
-                db[j] += deta_i[i][j];
+    } else {
+        #pragma omp parallel for collapse(2)
+        for (int i = 0; i < N; i++)
+            for (int j = 0; j < H; j++) {
+                ht[i * D * H + j] = hx[i * H + j]; // [D,N,H] --> [N,H,D]
+                back_ht_1[i * D * H + j] = hx[N * H + i * H + j];
+                ct[i * D * H + j] = cx[i * H + j];
+                back_ct_1[i * D * H + j] = cx[N * H + i * H + j];
             }
-        }
     }
+    //x*wx : [T*N,I] * [I,4H]
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, N*T, n, k, 1, x, k, 
+      wx, n, 0.0, gemmC1, n);
+    if(D == BIDIRECT){
+        cblas_sgemm(CblasRowMajor,CblasNoTrans, CblasNoTrans, N*T, n, k, 1, x, 
+          k, back_wx, n, 0.0, back_gemmC1, n);
+    }
+    for (int t =0; t < T; t++) {
+        //  perform the first direction, X*wx and H * wh for each step
+        //  ht-1*wh, ht-1:[N,H] wh:[H, 4H]
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, m, n, H, 1, 
+                    ht_1, D*H, wh, n, 0.0, gemmC2, n);
 
-
-    //
-    // Compute derivation of bidirectional LSTM's "backward(reverse)" path:
-    //
-
-    if (D == 2) {
-        for (i = 0; i < gemm_m; i += N) {
+        it = gateI + t * N * H;
+        ft = gateF + t * N * H;
+        gt = gateG + t * N * H;
+        ot = gateO + t * N * H;
+        gemmC1_t = gemmC1 + t * N * 4 * H;
+        if (bx){
             #pragma omp parallel for collapse(2)
-            for (j = 0; j < N; j ++) {
-                for (k = 0; k < H; k ++) {
-                    tc = tanh(ct_reverse[i + j][k]);
-                    if (i == 0) {
-                        deta_h_reverse[j][k] = grad_hy[N * H + j * H + k];
-                        deta_c_reverse[i + j][k] = deta_h_reverse[j][k] * ot_reverse[i + j][k] * (1 - tc * tc) + grad_cy[N * H + j * H + k];
-                    }
-                    else {
-                        deta_c_reverse[i+j][k] = deta_h_reverse[j][k] * ot_reverse[i + j][k] * (1 - tc * tc) + deta_c_reverse[i + j - N][k] * ft_reverse[i + j - N][k];
-                    }
-                    deta_i_reverse[i + j][k] = deta_c_reverse[i + j][k] * gt_reverse[i + j][k] * it_reverse[i + j][k] * (1 - it_reverse[i + j][k]); 
-                    deta_g_reverse[i + j][k] = deta_c_reverse[i + j][k] * it_reverse[i + j][k] * (1 - gt_reverse[i + j][k] * gt_reverse[i + j][k]);
-                    deta_o_reverse[i + j][k] = deta_h_reverse[j][k] * tc * ot_reverse[i + j][k] * (1 - ot_reverse[i + j][k]);
-                    if (i != gemm_m - N) {
-                        deta_f_reverse[i + j][k] = deta_c_reverse[i + j][k] * ct_reverse[i + j + N][k] * ft_reverse[i + j][k] * (1 - ft_reverse[i + j][k]);
-                    }
-                    else {
-                        dc0[N*H + j*H + k] = deta_c_reverse[i + j][k] * ft_reverse[i + j][k];
-                        deta_f_reverse[i + j][k] = deta_c_reverse[i + j][k] * c_0[N*H + j*H + k] * ft_reverse[i + j][k] * (1 - ft_reverse[i + j][k]);
-                    }
-                }
-            }
-
-            if (i != gemm_m - N) {
-                cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, gemm_n, N, 1.0f, (float*)(ht_reverse+i+N), D * H, (float*)(deta_i_reverse+i), gemm_n, 1.0f, dwh + H * 4 * H, gemm_n);
-            } else {
-                cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, gemm_n, N, 1.0f, h_0 + N * H, H, (float*)(deta_i_reverse+i), gemm_n, 1.0f, dwh + H * 4 * H, gemm_n);
-            }
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N, H, gemm_n, 1.0f, (float*)(deta_i_reverse + i), gemm_n, wh + H * 4 * H, gemm_n, 0.0f, dh0 + N * H, H);
-    
-        }
-
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, gemm_m, I, gemm_n, 1.0f, (float*)(deta_i_reverse), gemm_n, wx + I * 4 * H, gemm_n, 1.0f, dx, I);
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, I, gemm_n, gemm_m, 1.0f, x, I, (float*)(deta_i_reverse), gemm_n, 0.0f, dwx + I * 4 * H, gemm_n);
-    
-        if (db != NULL)
-        {
-            float *db_reverse = db + 4 * H;
-            for(i = 0; i < gemm_m; ++i) {
-                for (j = 0; j < gemm_n; ++j) {
-                    db_reverse[j] += deta_i_reverse[i][j];
+            for (int i = 0; i < N; ++i) {
+                for (int j = 0; j < H; ++j) {
+                    int itb = i * 4 * H;
+                    int ftb = i * 4 * H + H;
+                    int gtb = i * 4 * H + 2 * H;
+                    int otb = i * 4 * H + 3 * H;
+                    it[i * H + j] = sigmoid(gemmC1_t[itb + j] + gemmC2[itb + j] + bx[j]);
+                    ft[i * H + j] = sigmoid(gemmC1_t[ftb + j] + gemmC2[ftb + j] + bx[H + j]);
+                    gt[i * H + j] = tanh(   gemmC1_t[gtb + j] + gemmC2[gtb + j] + bx[2 * H + j]);
+                    ot[i * H + j] = sigmoid(gemmC1_t[otb + j] + gemmC2[otb + j] + bx[3 * H + j]);
+                    ct[i * D * H + j] = ft[i * H + j] * ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
+                    ht[i * D * H + j] = ot[i * H + j] * tanh(ct[i * D * H + j]);
                 }
             }
         }
+        else{
+            #pragma omp parallel for collapse(2)
+            for (int i = 0; i < N; ++i) {
+                for (int j = 0; j < H; ++j) {
+                    int itb = i * 4 * H;
+                    int ftb = i * 4 * H + H;
+                    int gtb = i * 4 * H + 2 * H;
+                    int otb = i * 4 * H + 3 * H;
+                    it[i * H + j] = sigmoid(gemmC1_t[itb + j] + gemmC2[itb + j]);
+                    ft[i * H + j] = sigmoid(gemmC1_t[ftb + j] + gemmC2[ftb + j]);
+                    gt[i * H + j] = tanh(   gemmC1_t[gtb + j] + gemmC2[gtb + j]);
+                    ot[i * H + j] = sigmoid(gemmC1_t[otb + j] + gemmC2[otb + j]);
+                    ct[i * D * H + j] = ft[i * H + j] * ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
+                    ht[i * D * H + j] = ot[i * H + j] * tanh(ct[i * D * H + j]);
+                }
+            }
+        }
+
+
+        ht_1 = ht;
+        ht = ht + D * H * N;
+        ct_1 = ct;
+        ct = ct + D * H * N;
+
+        //  perform the second direction
+        if (D == BIDIRECT) {
+            it = back_gateI + (T - 1 - t) * N * H;
+            ft = back_gateF + (T - 1 - t) * N * H;
+            gt = back_gateG + (T - 1 - t) * N * H;
+            ot = back_gateO + (T - 1 - t) * N * H;
+            gemmC1_t = back_gemmC1 + (T - 1 - t) * N * 4 * H;
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, m, n, H, 1, 
+                        back_ht_1, D * H, back_wh, n, 0.0, gemmC2, n);
+            if(back_bx){
+                #pragma omp parallel for collapse(2)
+                for (int i = 0; i < N; ++i) {
+                    for (int j = 0; j < H; ++j) {
+                        int itb = i * 4 * H;
+                        int ftb = i * 4 * H + H;
+                        int gtb = i * 4 * H + 2 * H;
+                        int otb = i * 4 * H + 3 * H;
+                        it[i * H + j] = sigmoid(gemmC1_t[itb + j] + gemmC2[itb + j] + back_bx[j]);
+                        ft[i * H + j] = sigmoid(gemmC1_t[ftb + j] + gemmC2[ftb + j] + back_bx[H + j]);
+                        gt[i * H + j] = tanh(   gemmC1_t[gtb + j] + gemmC2[gtb + j] + back_bx[2 * H + j]);
+                        ot[i * H + j] = sigmoid(gemmC1_t[otb + j] + gemmC2[otb + j] + back_bx[3 * H + j]);
+                        back_ct[i * D * H + j] = ft[i * H + j] * back_ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
+                        back_ht[i * D * H + j] = ot[i * H + j] * tanh(back_ct[i * D * H + j]);
+                    }
+                }
+            }
+            else{
+                #pragma omp parallel for collapse(2)
+                for (int i = 0; i < N; ++i) {
+                    for (int j = 0; j < H; ++j) {
+                        int itb = i * 4 * H;
+                        int ftb = i * 4 * H + H;
+                        int gtb = i * 4 * H + 2 * H;
+                        int otb = i * 4 * H + 3 * H;
+                        it[i * H + j] = sigmoid(gemmC1_t[itb + j] + gemmC2[itb + j]);
+                        ft[i * H + j] = sigmoid(gemmC1_t[ftb + j] + gemmC2[ftb + j]);
+                        gt[i * H + j] = tanh(   gemmC1_t[gtb + j] + gemmC2[gtb + j]);
+                        ot[i * H + j] = sigmoid(gemmC1_t[otb + j] + gemmC2[otb + j]);
+                        back_ct[i * D * H + j] = ft[i * H + j] * back_ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
+                        back_ht[i * D * H + j] = ot[i * H + j] * tanh(back_ct[i * D * H + j]);
+                    }
+                }
+            }
+            back_ht_1 = back_ht;
+            back_ht = back_ht - D * H * N;
+            back_ct_1 = back_ct;
+            back_ct = back_ct - D * H * N;
+        }
+
     }
 
-    
-    
-    
-    return 0;
-}
-int lstm_xw_forward(void* buf,
-                    int batch_size,
-                    int time_step,
-                    int input_dim,
-                    int hidden_dim,
-                    float* wx,      //I*4H      
-                    float* wh,      //H*4H      
-                    float* bias,    //4H, because bx == bh, so just need one
-                    float* x, //T*N*I
-                    float* h_0,     //N*H
-                    float* c_0,     //N*H
-                    float* h_out,    //T*N*H
-                    float* c_out,   //T*N*H
-                    int mode,
-                    int bidirectional) {
-    switch(mode) {
-        case 0:
-            lstm_xw_sequential_forward(buf, batch_size, time_step, input_dim, hidden_dim, bidirectional, x, h_0, c_0, wx, wh, bias, h_out, c_out);
-            break;
-        default:
-            lstm_xw_sequential_forward(buf, batch_size, time_step, input_dim, hidden_dim, bidirectional, x, h_0, c_0, wx, wh, bias, h_out, c_out);
+
+    //  copy last state to hy/cy, from(N,H*D) to (D,N,H)
+    if (hy != 0) {
+        if (D == UNIDIRECT) {
+            float* ht_last = y + (T - 1) * N * H;
+            float* ct_last = gateC + (T - 1) * N * H;
+            #pragma omp parallel for collapse(2)
+            for (int i = 0; i < N; i++)
+                for (int j = 0; j < H; j++) {
+                    hy[i * H + j] = ht_last[i * H + j];
+                    cy[i * H + j] = ct_last[i * H + j];
+                }
+        } else {
+            float* ht_last = y + (T - 1) * N * H * D;
+            float* ht_back_last = y + H;
+            float* ct_last = gateC + (T - 1) * N * H * D;
+            float* ct_back_last = gateC + H;
+            #pragma omp parallel for collapse(2)
+            for (int i = 0; i < N; i++)
+                for (int j = 0; j < H; j++) {
+                    hy[i * H + j] = ht_last[i * D * H + j];
+                    hy[N * H + i * H + j] = ht_back_last[i * D * H + j];
+                    cy[i * H + j] = ct_last[i * D * H + j];
+                    cy[N * H + i * H + j] = ct_back_last[i * D * H + j];
+                }
+        }
     }
-    return 0;
 }
 
-int lstm_xw_backward(
-        void* buf,
-        int num_layer,
-        int num_direction,
-        int time_step,
-        int batch_size,
-        int input_dim,
-        int hidden_dim,
-        float * x,
-        float * h_0,
-        float * c_0,
-        float * wx,
-        float * wh,
-        float * h_out,
-        float * c_out,
-        float * grad_h_out,     //(D, N, H)
-        float * grad_c_out,     //(D, N, H)
-        float * grad_x_input,   //(T, N, I)
-        float * grad_h0,        //(D, N, H)
-        float * grad_c0,        //(D, N, H)
-        float * grad_wx,        //(D, I, 4H
-        float * grad_wh,        //(D, H, 4H)
-        float * grad_bias,       //(D, 4H)
-        int mode) {
-    switch(mode) {
-        case 0:
-            lstm_xw_sequential_backward(buf, batch_size, time_step, input_dim, hidden_dim, num_direction, x, h_0, c_0, wx, wh, h_out, c_out, 
-                                        grad_h_out, grad_c_out, grad_wx, grad_wh, grad_bias, grad_x_input, grad_h0, grad_c0);
-            break;
-        default:
-            lstm_xw_sequential_backward(buf, batch_size, time_step, input_dim, hidden_dim, num_direction, x, h_0, c_0, wx, wh, h_out, c_out, 
-                                        grad_h_out, grad_c_out, grad_wx, grad_wh, grad_bias, grad_x_input, grad_h0, grad_c0);
+#if 1
+
+void lstm_xw_single_bwd(int T, int D, int N, int I, int H,
+            float* ws, //D * (N*4H + N*H + N*H)
+            float* x,  //[T,N,I]
+            float* hx, //[D*N,H]
+            float* cx, //[D*N,H]
+            float* y,  //[T,N,D,H]
+            float* wx, //[I,4H]
+            float* wh, //[H,4H]
+            float* dx,  //[T,N,I]
+            float* dhx, //[D,N,H]
+            float* dcx, //[D,N,H]
+            float* dwx, //[I,4H]
+            float* dwh, //[H,4H]
+            float* dbx, //[1,4H]
+            float* dy, //[T,N,D,H] 
+            float* dhy, //[D,N,H]
+            float* dcy, //[D,N,H]  
+            float* gateI,//(L*)D*T*N*H
+            float* gateF,//(L*)D*T*N*H
+            float* gateG,//(L*)D*T*N*H
+            float* gateO,//(L*)D*T*N*H
+            float* gateC//(L*)[T,N,D,H]
+)
+{  
+    int i,j,t,d;
+    float* it;
+    float* ft;
+    float* gt;
+    float* ot;
+    float* ct;
+    float* ht1;//[N,D,H]
+    float* ct1;
+    float* dxt;
+    float* dyt;
+    float* dat;
+    float* da = ws; //[T,N,4H]
+    float* dht1 = da + T * N * 4 * H;  //[D,N,H]
+    float* dct1 = dht1 + D * N * H; //[D,N,H]
+    float* hx_ = dct1 + D * N * H; //[N,D,H] 
+    float* cx_ = hx_ + D * N * H; //[N,D,H]
+    float* back_ht1;
+    float* back_y = y + H; 
+    float* back_dy = dy + H;
+    float* back_dyt;
+    float* back_dht1 = dht1 + N * H; //[N,H]
+    float* back_dct1 = dct1 + N * H; //[N,H]
+    float* back_dhy = dhy + N * H;
+    float* back_dcx = dcx + N * H;
+    float* back_dcy = dcy + N * H;
+    float* back_gateI = gateI + T * N * H;
+    float* back_gateF = gateF + T * N * H;
+    float* back_gateG = gateG + T * N * H;
+    float* back_gateO = gateO + T * N * H;
+    float* back_gateC = gateC + H;
+    float* back_wx = wx + I*4*H;
+    float* back_wh = wh + H*4*H;
+    float* back_dwx = dwx + I*4*H;
+    float* back_dwh = dwh + H*4*H;
+    float* back_dbx = dbx + 4*H;
+    float* dht = dht1;
+    float* dct = dct1;
+    float* back_dht = back_dht1;
+    float* back_dct = back_dct1;
+
+    #pragma omp parallel for
+    for(i = 0; i < D * H * 4 * H; ++i){
+        dwh[i]=0;
     }
-    return 0;
+    if(dbx){
+        #pragma omp parallel for
+        for(i = 0; i < D * 4 * H; ++i){
+            dbx[i]=0;
+        }
+    }
+    // copy dhy,dcy to internal buffer,[D,N,H]
+    #pragma omp parallel for
+    for(i = 0; i < D * N * H; ++i){
+        dht[i] = dhy[i];
+        dct[i] = dcy[i];
+    }
+    // to make following iteration smooth, [D,N,H] -> [N,D,H]
+    #pragma omp parallel for collapse(2)
+    for(i=0; i < N; ++i){
+        for(d=0; d < D; ++d){
+            for(j=0; j < H; ++j){
+                hx_[i * D * H + d * H + j] = hx[d * N * H + i * H + j];
+                cx_[i * D * H + d * H + j] = cx[d * N * H + i * H + j];
+            }
+        }
+    }
+
+    for(t = T - 1; t >= 0; --t){
+        //add dy[T,N,D,H] to dht[D,N,H]
+        dyt = dy + t * N * D * H;
+        #pragma omp parallel for collapse(2)
+        for(i=0; i < N; ++i){
+            for(j=0; j < H; ++j){
+                dht[i*H+j] += dyt[i*D*H+j];
+            }
+        }
+        it = gateI + t * N * H;
+        ft = gateF + t * N * H;
+        gt = gateG + t * N * H;
+        ot = gateO + t * N * H;
+        ct = gateC + t * N * D * H; //[T,N,D,H]
+        ct1 = (t != 0)? (gateC + (t-1) * N * D * H) : (cx_);
+        ht1 = (t != 0)? (y + (t-1) * N * D * H) : (hx_);
+        dat = da + t * N * 4 * H;                               
+        #pragma omp parallel for collapse(2)
+        for( i=0; i < N; ++i){
+            for( j=0; j < H; ++j){
+                int base = i * H + j;
+                int itb = i * 4 * H;
+                int ftb = i * 4 * H + H;
+                int gtb = i * 4 * H + 2 * H;
+                int otb = i * 4 * H + 3 * H;
+                
+                float tanh_ct = tanh(ct[i * D * H + j]);
+                dct[base] = dct[base] + dht[base] * ot[base] * (1 - tanh_ct * tanh_ct);
+                dat[itb + j] = dct[base] * gt[base] * it[base] * (1 - it[base]);
+                dat[ftb + j] = dct[base] * ct1[i * D * H + j] * ft[base] * (1 - ft[base]);
+                dat[gtb + j] = dct[base] * it[base] * (1 - gt[base] * gt[base]);
+                dat[otb + j] = dht[base] * tanh_ct * ot[base] * (1 - ot[base]);
+                dct1[base] = dct[base] * ft[base];
+            }
+        }
+        // dht1 = dat * wh.T    [N,H] = [N,4H] * [4H,H]
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N, H, 4 * H, 1.0, 
+          dat, 4 * H, wh, 4 * H, 0.0, dht1, H);
+
+        // dwh = ht1.T * dat    [H,4H] = [H,N] * [N,4H]
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, 4 * H, 
+          N, 1.0, ht1, D*H, dat, 4 * H, 1.0, dwh, 4 * H);
+    }
+    // dbx = e * da       [T,N,4H] -> [1,4H] reduce
+    if(dbx){
+        #pragma omp parallel for
+        for(i = 0; i < 4 * H; ++i){
+            for(j = 0; j < N * T; ++j){
+                dbx[i] += da[j * 4 * H + i];
+            }
+        }
+    }
+    // dx = da * wx.T    [T*N,I] = [T*N,4H] * [4H,I]
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T*N, I, 4 * H, 1, 
+      da, 4 * H, wx, 4 * H, 0, dx, I);
+    // dwx = x.T * da    [I,4H] = [I,T*N] * [T*N,4H]
+    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, I, 4 * H, T*N, 1, x, 
+      I, da, 4 * H, 0, dwx, 4 * H);
+
+    /******************************  D = 2 *******************************/
+
+    if(D == 2){
+        for(t = 0; t < T; ++t){
+            //add dy[T,N,D,H] to dhy[D,N,H]
+            back_dyt = back_dy + t * N * D * H;
+            #pragma omp parallel for collapse(2)
+            for(i=0; i < N; ++i){
+                for(j=0; j < H; ++j){
+                    back_dht[i*H+j] += back_dyt[i*D*H + j];
+                }
+            }
+            it = back_gateI + t * N * H;
+            ft = back_gateF + t * N * H;
+            gt = back_gateG + t * N * H;
+            ot = back_gateO + t * N * H;
+            ct = back_gateC + t * N * D * H; //[T,N,D,H]
+            // reuse ct1 in D=2, but dct could not be reused
+            ct1 = (t != T-1)? (back_gateC + (t+1) * N * D * H) : (cx_ + H);
+            // reuse ht1 in D=2, but dht could not be reused
+            ht1 = (t != T-1)? (back_y + (t+1) * N * D * H) : (hx_ + H);
+            // reuse dat in D=2
+            dat = da + t * N * 4 * H; //reuse buffer for D=1 and D=2
+            #pragma omp parallel for collapse(2)
+            for( i=0; i < N; ++i){
+                for( j=0; j < H; ++j){
+                    int base = i * H + j;
+                    int itb = i * 4 * H;
+                    int ftb = i * 4 * H + H;
+                    int gtb = i * 4 * H + 2 * H;
+                    int otb = i * 4 * H + 3 * H;
+                    
+                    float tanh_ct = tanh(ct[i * D * H + j]);
+                    back_dct[base] = back_dct[base] + back_dht[base] * ot[base] * (1 - tanh_ct * tanh_ct);
+                    dat[itb + j] = back_dct[base] * gt[base] * it[base] * (1 - it[base]);
+                    dat[ftb + j] = back_dct[base] * ct1[i * D * H + j] * ft[base] * (1 - ft[base]);
+                    dat[gtb + j] = back_dct[base] * it[base] * (1 - gt[base] * gt[base]);
+                    dat[otb + j] = back_dht[base] * tanh_ct * ot[base] * (1 - ot[base]);
+                    back_dct1[base] = back_dct[base] * ft[base];
+                }
+            }
+
+            // dht1 = da * wh.T    [N,H] = [N,4H] * [4H,H]
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N, H, 4 * H, 1, 
+              dat, 4 * H, back_wh, 4 * H, 0, back_dht1, H);
+            // dwh = ht1.T * da    [H,3H] = [H,N] * [N,4H]
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, 4 * H, 
+              N, 1, ht1, D*H, dat, 4 * H, 1, back_dwh, 4 * H);
+        }
+
+        // dbx = e * da       [T,N,4H] -> [1,4H] reduce
+        if(dbx){
+            #pragma omp parallel for
+            for(i = 0; i < 4 * H; ++i){
+                for(j = 0; j < N * T; ++j){
+                    back_dbx[i] += da[j * 4 * H + i];
+                }
+            }
+        }
+        // dxt = da * wx.T    [T*N,I] = [T*N,4H] * [4H,I]
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T*N, I, 4 * H, 1, 
+          da, 4 * H, back_wx, 4 * H, 1, dx, I);
+
+        // dwx = xt.T * da    [I,4H] = [I,N] * [N,4H]
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, I, 4 * H, T*N, 1, x, 
+          I, da, 4 * H, 0, back_dwx, 4 * H);
+    }
+
+    #pragma omp parallel for
+    for(i = 0; i < D * N * H; ++i){
+        dhx[i] = dht1[i];
+        dcx[i] = dct1[i];
+    }
+
 }
+
+#endif
+
+ /*
+ * @brief:  lstm_xw_train_get_workspace_size
+ *          get the size of buffer space for GRU training
+ *
+ * @params: I:  input_dim
+ *          H:  hidden_size
+ *          T:  seq_length
+ *          N:  batch_size
+ *          bi: whether bi-directional or not (1 or 0)
+ *          L:  num_layers
+ *
+ * @workspace: RESERVED
+ *             gateI [L,D,T,N,H]
+ *             gateF [L,D,T,N,H]
+ *             gateG [L,D,T,N,H]
+ *             gateO [L,D,T,N,H]
+ *             gateC [L,T,N,D,H]
+ *
+ *             TEMP for FORWARD
+ *             gemmC1 [D,T,N,4H]
+ *             gemmC2 [N,4H]
+ *
+ *             TEMP for BACKWARD
+ *             da   [T,N,4H]
+ *             dht1 [D,N,H]
+ *             dct1 [D,N,H]
+ *             hx_  [N,D,H]
+ *             cx_  [N,D,H]
+ *
+ */ 
+
+int lstm_xw_train_get_workspace_size(int I, int H, int T, int N, int bi, int L){
+    int D = (bi==1)? 2:1;
+    return 5 * L * T * D * N * H + 8 * N * H + 2 * T * N * 4 * H;
+}
+
+
+void print_forward_desc(RNNForwardDesc desc){
+    printf("    L = %d, D = %d, T = %d, N = %d, I = %d, H = %d \n",
+        desc.L,desc.D,desc.T,desc.N,desc.I,desc.H);
+    printf("x = 0x%x, hx = 0x%x, cx = 0x%x, wx = 0x%x, wh = 0x%x, bx = 0x%x, hy = 0x%x, cy = 0x%x \n",
+            desc.x, desc.hx, desc.cx, desc.wx, desc.wh, desc.bx, desc.hy, desc.cy);
+}
+void print_backward_desc(RNNBackwardDesc desc){
+    printf("    L = %d, D = %d, T = %d, N = %d, I = %d, H = %d \n",
+        desc.L,desc.D,desc.T,desc.N,desc.I,desc.H);
+    printf("x = 0x%x, hx = 0x%x, cx = 0x%x, wx = 0x%x, wh = 0x%x, hy = 0x%x, cy = 0x%x \n",
+            desc.x, desc.hx, desc.cx, desc.wx, desc.wh, desc.hy, desc.cy);
+    printf("dx = 0x%x, dhx = 0x%x, dcx = 0x%x, dwx = 0x%x, dwh = 0x%x, dbx = 0x%x, dhy = 0x%x, dcy = 0x%x \n",
+            desc.dx, desc.dhx, desc.dcx, desc.dwx, desc.dwh, desc.dbx, desc.dhy, desc.dcy);
+}
+
+
+int lstm_xw_forward(RNNForwardDesc desc){
+    //print_forward_desc(desc);
+    float* gateI = desc.ws;
+    float* gateF = gateI + desc.D * desc.T * desc.N * desc.H;
+    float* gateG = gateF + desc.D * desc.T * desc.N * desc.H;
+    float* gateO = gateG + desc.D * desc.T * desc.N * desc.H;
+    float* gateC = gateO + desc.D * desc.T * desc.N * desc.H;
+    float* ws_new = gateC + desc.D * desc.T * desc.N * desc.H;
+    lstm_forward_single_sequential(desc.T, desc.D, desc.N, desc.I, desc.H,
+        ws_new, desc.x, desc.hx, desc.cx, desc.wx, desc.wh, desc.bx, desc.y, desc.hy, desc.cy,
+        gateI, gateF, gateG, gateO, gateC);
+    return 0;
+
+}
+int lstm_xw_backward(RNNBackwardDesc desc){
+    //print_backward_desc(desc);
+    float* gateI = desc.ws;
+    float* gateF = gateI + desc.D * desc.T * desc.N * desc.H;
+    float* gateG = gateF + desc.D * desc.T * desc.N * desc.H;
+    float* gateO = gateG + desc.D * desc.T * desc.N * desc.H;
+    float* gateC = gateO + desc.D * desc.T * desc.N * desc.H;
+    float* ws_new = gateC + desc.D * desc.T * desc.N * desc.H;
+
+    lstm_xw_single_bwd(desc.T, desc.D, desc.N, desc.I, desc.H,
+        ws_new, desc.x, desc.hx, desc.cx, desc.y, desc.wx, desc.wh, desc.dx,
+        desc.dhx, desc.dcx, desc.dwx, desc.dwh, desc.dbx, desc.dy, desc.dhy,
+        desc.dcy, gateI, gateF, gateG, gateO, gateC);
+
+    return 0;
+
+}
+
 
 }

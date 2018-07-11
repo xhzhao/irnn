@@ -12,6 +12,58 @@ extern "C" {
 #endif
 
 #define ENABLE_OMP_SETTING  0
+#define UNIDIRECT 1
+#define BIDIRECT 2
+// descripter support RNN/LSTM/GRU
+typedef struct ForwardDesc{
+    int L;
+    int D;
+    int T;
+    int N;
+    int I;
+    int H;
+    float * ws;
+    float * x;
+    float * hx;
+    float * cx;
+    float * wx;
+    float * wh; 
+    float * bx; 
+    float * bh; 
+    float * y;
+    float * hy;
+    float * cy;
+    int algo;
+} RNNForwardDesc;
+
+typedef struct BackwardDesc{
+    int L;
+    int D;
+    int T;
+    int N;
+    int I;
+    int H;
+    float * ws;
+    float * x;
+    float * hx; 
+    float * cx; 
+    float * wx; 
+    float * wh;
+    float * y;
+    float * hy;
+    float * cy;
+    float * dx;
+    float * dhx;
+    float * dcx;
+    float * dwx;
+    float * dwh;
+    float * dbx;
+    float * dbh;
+    float * dy;
+    float * dhy;
+    float * dcy;
+    int algo;
+} RNNBackwardDesc;
 
 //will remain
 int rnn_xw_infer_get_workspace_size(int input_dim, int hid, int max_time_step, 
@@ -22,8 +74,8 @@ int lstm_wx_infer_get_workspace_size(int input_dim, int hid, int max_time_step,
   int max_batch_size);
 int lstm_xw_infer_get_workspace_size(int input_dim, int hid, int max_time_step, 
   int max_batch_size);
-int lstm_xw_train_get_workspace_size(int input_dim, int hid, int max_time_step, 
-  int max_batch_size, int bidirectional);
+int lstm_xw_train_get_workspace_size(int I, int H, int T, int N, int bi, int L);
+
 int gru_xw_train_get_workspace_size(int input_dim, int hid, int max_time_step, 
   int max_batch_size, int bi, int num_layer);
 int gru_xw_infer_get_workspace_size(int input_dim, int hid, int max_time_step, 
@@ -31,8 +83,8 @@ int gru_xw_infer_get_workspace_size(int input_dim, int hid, int max_time_step,
 
 int lstm_wx_infer(void* buf, int batch_size, int time_step, int input_dim, int hid, int max_time_step, int max_batch_size, 
     float* w_x, float* w_h, float* b, float* x, float* h_0, float* c_0, float* h_out, float* c_out, bool return_sequences, int mode = 0);
-int lstm_xw_infer(void* buf, int batch_size, int time_step, int input_dim, int hid, int max_time_step, int max_batch_size, 
-    float* w_x, float* w_h, float* b, float* x, float* h_0, float* c_0, float* h_out, float* c_out, bool return_sequences, int mode = 0);
+//int lstm_xw_infer(void* buf, int batch_size, int time_step, int input_dim, int hid, int max_time_step, int max_batch_size, 
+//    float* w_x, float* w_h, float* b, float* x, float* h_0, float* c_0, float* h_out, float* c_out, bool return_sequences, int mode = 0);
 
 int rnn_xw_infer(void* buf, int batch_size, int time_step, int input_dim, int hid, int max_time_step, int max_batch_size, 
     float* w_x, float* w_h, float* b, float* x, float* h_0, float* h_out, bool return_sequences, int mode = 0);
@@ -42,7 +94,7 @@ int lstm_wx_training(void* buf, int batch_size, int time_step, int input_dim, in
 
 //int lstm_xw_forward(float* buf, int batch_size, int time_step, int input_dim, int hid, int max_time_step, int max_batch_size,
 //    float* w_x, float* w_h, float* b, float* x, float* h_0, float* c_0, float* h_out, float* c_out, int mode = 0);
-
+/*
 int lstm_xw_forward(void* buf,
                     int batch_size,
                     int time_step,
@@ -84,7 +136,16 @@ int lstm_xw_backward(
         float * grad_wh,        //(D, H, 4H)
         float * grad_bias,       //(D, 4H)
         int mode);
+*/
 
+int gru_xw_infer(RNNForwardDesc desc);
+int gru_xw_forward(RNNForwardDesc desc);
+int gru_xw_backward(RNNBackwardDesc desc);
+int lstm_xw_infer(RNNForwardDesc desc);
+int lstm_xw_forward(RNNForwardDesc desc);
+int lstm_xw_backward(RNNBackwardDesc desc);
+
+/*
 int  gru_xw_infer(int L,
                     int T,
                     int D,
@@ -179,7 +240,7 @@ int gru_xw_backward_prof(int num_layers,
                      float* ws,
                      int mode,
                      double* time);
-
+*/
 
 #ifdef __cplusplus
 }
