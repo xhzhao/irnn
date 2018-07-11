@@ -12,6 +12,64 @@ inline float sigmoid(float x){
     return 1.0f / (1.0f + exp(-x));
 }
 
+static void elemwise_opt(int D, int N, int H, float* it, float* ft, float* gt, float* ot,
+    float* gemmC1_t, float* gemmC2, float* bx, float* ht, float* ct, float* ct_1){
+    if (bx){
+        #pragma omp parallel for
+        for (int i = 0; i < N; ++i) {
+            int itb = i * 4 * H;
+            int ftb = i * 4 * H + H;
+            int gtb = i * 4 * H + 2 * H;
+            int otb = i * 4 * H + 3 * H;
+            for (int j = 0; j < H; ++j) {
+                gemmC2[itb + j] = -(gemmC1_t[itb + j] + gemmC2[itb + j] + bx[j]);
+                gemmC2[ftb + j] = -(gemmC1_t[ftb + j] + gemmC2[ftb + j] + bx[H + j]);
+                gemmC2[gtb + j] = gemmC1_t[gtb + j] + gemmC2[gtb + j] + bx[2 * H + j];
+                gemmC2[otb + j] = -(gemmC1_t[otb + j] + gemmC2[otb + j] + bx[3 * H + j]);
+            }
+            vsExp(2 * H, gemmC2 + itb, gemmC2 + itb);
+            vsTanh(H, gemmC2 + gtb, gemmC2 + gtb);
+            vsExp(H, gemmC2 + otb, gemmC2 + otb);
+            for (int j = 0; j < H; ++j) {
+                it[i * H + j] = 1 / (1 + gemmC2[itb + j]);
+                ft[i * H + j] = 1 / (1 + gemmC2[ftb + j]);
+                gt[i * H + j] = gemmC2[gtb + j];
+                ot[i * H + j] = 1 / (1 + gemmC2[otb + j]);
+                ct[i * D * H + j] = ft[i * H + j] * ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
+                ht[i * D * H + j] = ot[i * H + j] * tanh(ct[i * D * H + j]);
+            }
+        }
+    }
+    else{
+        #pragma omp parallel for
+        for (int i = 0; i < N; ++i) {
+            int itb = i * 4 * H;
+            int ftb = i * 4 * H + H;
+            int gtb = i * 4 * H + 2 * H;
+            int otb = i * 4 * H + 3 * H;
+            for (int j = 0; j < H; ++j) {
+                gemmC2[itb + j] = -(gemmC1_t[itb + j] + gemmC2[itb + j] );
+                gemmC2[ftb + j] = -(gemmC1_t[ftb + j] + gemmC2[ftb + j] );
+                gemmC2[gtb + j] = gemmC1_t[gtb + j] + gemmC2[gtb + j];
+                gemmC2[otb + j] = -(gemmC1_t[otb + j] + gemmC2[otb + j]);
+            }
+            vsExp(2 * H, gemmC2 + itb, gemmC2 + itb);
+            vsTanh(H, gemmC2 + gtb, gemmC2 + gtb);
+            vsExp(H, gemmC2 + otb, gemmC2 + otb);
+            for (int j = 0; j < H; ++j) {
+                it[i * H + j] = 1 / (1 + gemmC2[itb + j]);
+                ft[i * H + j] = 1 / (1 + gemmC2[ftb + j]);
+                gt[i * H + j] = gemmC2[gtb + j];
+                ot[i * H + j] = 1 / (1 + gemmC2[otb + j]);
+                ct[i * D * H + j] = ft[i * H + j] * ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
+                ht[i * D * H + j] = ot[i * H + j] * tanh(ct[i * D * H + j]);
+            }
+        }
+    }
+
+}
+
+
 void lstm_forward_single_sequential(int T, int D, int N, int I, int H, 
     float* ws,   //
     float* x,    //[T,N,H*D]
@@ -92,41 +150,8 @@ void lstm_forward_single_sequential(int T, int D, int N, int I, int H,
         gt = gateG + t * N * H;
         ot = gateO + t * N * H;
         gemmC1_t = gemmC1 + t * N * 4 * H;
-        if (bx){
-            #pragma omp parallel for collapse(2)
-            for (int i = 0; i < N; ++i) {
-                for (int j = 0; j < H; ++j) {
-                    int itb = i * 4 * H;
-                    int ftb = i * 4 * H + H;
-                    int gtb = i * 4 * H + 2 * H;
-                    int otb = i * 4 * H + 3 * H;
-                    it[i * H + j] = sigmoid(gemmC1_t[itb + j] + gemmC2[itb + j] + bx[j]);
-                    ft[i * H + j] = sigmoid(gemmC1_t[ftb + j] + gemmC2[ftb + j] + bx[H + j]);
-                    gt[i * H + j] = tanh(   gemmC1_t[gtb + j] + gemmC2[gtb + j] + bx[2 * H + j]);
-                    ot[i * H + j] = sigmoid(gemmC1_t[otb + j] + gemmC2[otb + j] + bx[3 * H + j]);
-                    ct[i * D * H + j] = ft[i * H + j] * ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
-                    ht[i * D * H + j] = ot[i * H + j] * tanh(ct[i * D * H + j]);
-                }
-            }
-        }
-        else{
-            #pragma omp parallel for collapse(2)
-            for (int i = 0; i < N; ++i) {
-                for (int j = 0; j < H; ++j) {
-                    int itb = i * 4 * H;
-                    int ftb = i * 4 * H + H;
-                    int gtb = i * 4 * H + 2 * H;
-                    int otb = i * 4 * H + 3 * H;
-                    it[i * H + j] = sigmoid(gemmC1_t[itb + j] + gemmC2[itb + j]);
-                    ft[i * H + j] = sigmoid(gemmC1_t[ftb + j] + gemmC2[ftb + j]);
-                    gt[i * H + j] = tanh(   gemmC1_t[gtb + j] + gemmC2[gtb + j]);
-                    ot[i * H + j] = sigmoid(gemmC1_t[otb + j] + gemmC2[otb + j]);
-                    ct[i * D * H + j] = ft[i * H + j] * ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
-                    ht[i * D * H + j] = ot[i * H + j] * tanh(ct[i * D * H + j]);
-                }
-            }
-        }
 
+        elemwise_opt(D, N, H, it, ft, gt, ot, gemmC1_t, gemmC2, bx, ht, ct, ct_1);
 
         ht_1 = ht;
         ht = ht + D * H * N;
@@ -142,48 +167,14 @@ void lstm_forward_single_sequential(int T, int D, int N, int I, int H,
             gemmC1_t = back_gemmC1 + (T - 1 - t) * N * 4 * H;
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, m, n, H, 1, 
                         back_ht_1, D * H, back_wh, n, 0.0, gemmC2, n);
-            if(back_bx){
-                #pragma omp parallel for collapse(2)
-                for (int i = 0; i < N; ++i) {
-                    for (int j = 0; j < H; ++j) {
-                        int itb = i * 4 * H;
-                        int ftb = i * 4 * H + H;
-                        int gtb = i * 4 * H + 2 * H;
-                        int otb = i * 4 * H + 3 * H;
-                        it[i * H + j] = sigmoid(gemmC1_t[itb + j] + gemmC2[itb + j] + back_bx[j]);
-                        ft[i * H + j] = sigmoid(gemmC1_t[ftb + j] + gemmC2[ftb + j] + back_bx[H + j]);
-                        gt[i * H + j] = tanh(   gemmC1_t[gtb + j] + gemmC2[gtb + j] + back_bx[2 * H + j]);
-                        ot[i * H + j] = sigmoid(gemmC1_t[otb + j] + gemmC2[otb + j] + back_bx[3 * H + j]);
-                        back_ct[i * D * H + j] = ft[i * H + j] * back_ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
-                        back_ht[i * D * H + j] = ot[i * H + j] * tanh(back_ct[i * D * H + j]);
-                    }
-                }
-            }
-            else{
-                #pragma omp parallel for collapse(2)
-                for (int i = 0; i < N; ++i) {
-                    for (int j = 0; j < H; ++j) {
-                        int itb = i * 4 * H;
-                        int ftb = i * 4 * H + H;
-                        int gtb = i * 4 * H + 2 * H;
-                        int otb = i * 4 * H + 3 * H;
-                        it[i * H + j] = sigmoid(gemmC1_t[itb + j] + gemmC2[itb + j]);
-                        ft[i * H + j] = sigmoid(gemmC1_t[ftb + j] + gemmC2[ftb + j]);
-                        gt[i * H + j] = tanh(   gemmC1_t[gtb + j] + gemmC2[gtb + j]);
-                        ot[i * H + j] = sigmoid(gemmC1_t[otb + j] + gemmC2[otb + j]);
-                        back_ct[i * D * H + j] = ft[i * H + j] * back_ct_1[i * D * H + j] + it[i * H + j] * gt[i * H + j];
-                        back_ht[i * D * H + j] = ot[i * H + j] * tanh(back_ct[i * D * H + j]);
-                    }
-                }
-            }
+            elemwise_opt(D, N, H, it, ft, gt, ot, gemmC1_t, gemmC2, back_bx, back_ht, back_ct, back_ct_1);
+
             back_ht_1 = back_ht;
             back_ht = back_ht - D * H * N;
             back_ct_1 = back_ct;
             back_ct = back_ct - D * H * N;
         }
-
     }
-
 
     //  copy last state to hy/cy, from(N,H*D) to (D,N,H)
     if (hy != 0) {
