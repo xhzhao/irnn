@@ -1,6 +1,4 @@
 #!/bin/sh
-lscpu
-which python
 
 pattern='xw' #default
 echo $p
@@ -25,5 +23,5 @@ echo -e "### using $KMP_SETTING\n"
 cd ../../build
 
 
-./test_gru_xw_training $pattern $2
-
+./rnn_bench infer gru ud # unidirectional
+./rnn_bench infer gru bd # bidirectional

@@ -4,6 +4,8 @@
 ### Requirements
 ****
   * Pytorch
+  * conda install mkl mkl-include
+
 
 
 ### Installation

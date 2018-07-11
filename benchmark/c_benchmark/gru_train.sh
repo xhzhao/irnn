@@ -1,11 +1,9 @@
 #!/bin/sh
-lscpu
-which python
 
 pattern='xw' #default
 echo $p
 if [ ! -n "$1" ] ;then
-  echo "use default pattern: wx"
+  echo "use default pattern: xw"
 else
   pattern=$1
 fi
@@ -24,6 +22,6 @@ echo -e "### using $KMP_SETTING\n"
 
 cd ../../build
 
-
-./test_lstm_xw_training $pattern $2
+./rnn_bench train gru ud # unidirectional
+./rnn_bench train gru bd # bidirectional
 

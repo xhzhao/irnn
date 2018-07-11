@@ -66,6 +66,10 @@ IF (WITH_CPU)
     TARGET_LINK_LIBRARIES(iRNN mkl_rt)
 
 
+    add_executable(rnn_bench tests/benchmark.cpp)
+    TARGET_LINK_LIBRARIES(rnn_bench iRNN)
+    SET_TARGET_PROPERTIES(rnn_bench PROPERTIES COMPILE_FLAGS "${CMAKE_CXX_FLAGS} --std=c++11")
+
     INSTALL(TARGETS iRNN
             RUNTIME DESTINATION "bin"
             LIBRARY DESTINATION "lib"
