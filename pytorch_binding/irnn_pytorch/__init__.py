@@ -33,8 +33,7 @@ def _import_symbols(locals):
 _import_symbols(locals())
 
 
-def get_workspace_size(mode, train, input_size, hidden_size, seq_length, 
-                       batch_size, bidirectional, num_layer):
+def get_workspace_size(mode, train, L, bidirectional , T, N, I, H):
     pytorch_get_workspace_size = irnn.pytorch_get_workspace_size
     if mode == 'RNN_TANH' or mode == 'RNN_RELU':
         mode_int = 1
@@ -42,16 +41,9 @@ def get_workspace_size(mode, train, input_size, hidden_size, seq_length,
         mode_int = 2
     elif mode == 'GRU':
         mode_int = 3
-    if train:
-        train_int = 1
-    else:
-        train_int = 2
-    if bidirectional is True:
-        bidirectional_int = 1
-    else:
-        bidirectional_int = 0
-    workspace_size = pytorch_get_workspace_size(mode_int, train_int, input_size, 
-      hidden_size, seq_length, batch_size, bidirectional_int, num_layer)
+    train_int = 1 if train else 2
+    D = 2 if bidirectional else 1
+    workspace_size = pytorch_get_workspace_size(mode_int, train_int, L, D, T, N, I, H)
     #print("workspace_size = %d"% workspace_size)
     return workspace_size
 
@@ -309,8 +301,9 @@ class IRNNBase(Module):
         #update workspace in the first call, or exceed happens
         if self.update_workspace:
             #print("Updating the workspace ...")
-            buffer_size = get_workspace_size(self.mode, self.training, self.input_size, self.hidden_size,
-                                             self.max_seq_length, self.max_batch_size, self.bidirectional, self.num_layers)
+            buffer_size = get_workspace_size(self.mode, self.training, self.num_layers,
+                self.bidirectional, self.max_seq_length, self.max_batch_size,
+                self.input_size, self.hidden_size)
             self.workspace = Variable(torch.zeros(buffer_size), requires_grad=False)
             self.update_workspace = False
 

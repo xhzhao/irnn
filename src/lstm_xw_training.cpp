@@ -474,8 +474,7 @@ void lstm_xw_single_bwd(int T, int D, int N, int I, int H,
  *
  */ 
 
-int lstm_xw_train_get_workspace_size(int I, int H, int T, int N, int bi, int L){
-    int D = (bi==1)? 2:1;
+int lstm_xw_train_get_workspace_size(int L, int D, int T, int N, int I, int H){
     return 5 * L * T * D * N * H + 8 * N * H + 2 * T * N * 4 * H;
 }
 

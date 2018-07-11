@@ -9,8 +9,7 @@
 #define TRUE 1
 #define FALSE 0
 
-int pytorch_get_workspace_size(int mode, int train, int input_size, int hid, 
-    int time_step, int batch_size, int bidirectional, int num_layers);
+int pytorch_get_workspace_size(int mode, int train, int L, int D, int T, int N, int I, int H);
 
 int pytorch_gru_infer(
     int L,

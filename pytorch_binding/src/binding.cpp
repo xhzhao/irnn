@@ -21,25 +21,20 @@ extern "C"{
         }
     }
 
-    int pytorch_get_workspace_size(int mode, int train, int input_size,
-        int hidden_size, int time_step, int batch_size, int bidirectional,
-        int num_layer){
+    int pytorch_get_workspace_size(int mode, int train, int L, int D, int T, int N, int I, int H){
         int rtn = 0;
         if (mode == MODE_LSTM){
             if (train == TRAINING){
-                rtn = lstm_xw_train_get_workspace_size(input_size, hidden_size, 
-                      time_step, batch_size, bidirectional, num_layer);
+                rtn = lstm_xw_train_get_workspace_size(L, D, T, N, I, H);
             } else if(train == INFERENCE){
-                //rtn = lstm_xw_infer_get_workspace_size(input_size, hidden_size, time_step, batch_size);
+                rtn = lstm_xw_infer_get_workspace_size(L, D, T, N, I, H);
             }
         }
         if (mode == MODE_GRU){
             if (train == TRAINING){
-                rtn = gru_xw_train_get_workspace_size(input_size, hidden_size, 
-                      time_step, batch_size, bidirectional, num_layer);
+                rtn = gru_xw_train_get_workspace_size(L, D, T, N, I, H);
             } else if(train == INFERENCE){
-                rtn = gru_xw_infer_get_workspace_size(input_size, hidden_size, 
-                      time_step, batch_size, 1, 1);
+                rtn = gru_xw_infer_get_workspace_size(L, D, T, N, I, H);
             }
         }
         return rtn;

@@ -692,204 +692,6 @@ void gru_xw_seq_bwd(int L, int T, int D, int N, int I, int H,
 
 }
 
-/*
- * @brief:  gru_xw_forward
- *          interface function of GRU forward
- *
- * @params: L:  num_layers
- *          T:  seq_length
- *          D:  direction, D = 2 if bidirectional else 1
- *          N:  batch_size
- *          I:  input_dim
- *          H:  hidden_size
- *          x:  [T,N,I] input features
- *          hx: [L,D*N,H] initial hidden state
- *          wx: [L,D,I,3H]
- *          wh: [L,D,H,3H]
- *          bx: [L,D,3H]
- *          bh: [L,D,3H]
- *          y:  [T,N,D*H] output features for the every step
- *          hy: [L,D*N,H] output feature for the last time step
- *          ws: workspace, reserved buffer & temporary buffer
- *          mode: specify the mode of implementation
- *
- * @desc: call different implementations of forward functions.
- *        (Currently, there is only sequential version.)
- *
- */
-
-/*
-
-int  gru_xw_forward(int L,
-                    int T,
-                    int D,
-                    int N,
-                    int I,
-                    int H,
-                    float* x,
-                    float* hx,
-                    float* wx,
-                    float* wh,
-                    float* bx,
-                    float* bh,
-                    float* y,
-                    float* hy,
-                    float* ws,
-                    int mode)
-{
-    double time[4] = {0,0,0,0}; 
-    assert( (x != NULL) && "gru_xw_forward x is NULL");
-    assert( (hx != NULL) && "gru_xw_forward hx is NULL");
-    assert( (wx != NULL) && "gru_xw_forward wx is NULL");
-    assert( (wh != NULL) && "gru_xw_forward wh is NULL");
-    assert( (y != NULL) && "gru_xw_forward y is NULL");
-    assert( (hy != NULL) && "gru_xw_forward hy is NULL");
-    assert( (ws != NULL) && "gru_xw_forward ws is NULL");
-    gru_xw_seq_forward(L, T, D, N, I, H, x, hx, wx, wh, bx, bh, y, hy, ws, time);
-}
-*/
-
-int gru_xw_forward(RNNForwardDesc desc){
-
-    double time[4] = {0,0,0,0}; 
-    gru_xw_seq_forward(desc.L, desc.T, desc.D, desc.N, desc.I, desc.H, desc.x,
-        desc.hx, desc.wx, desc.wh, desc.bx, desc.bh, desc.y, desc.hy, desc.ws,
-        time);
-}
-
-
-/*
- * @brief:  gru_xw_backward
- *          interface function of GRU backward
- *
- * @params: L:  num_layers
- *          T:  seq_length
- *          D:  direction, D = 2 if bidirectional else 1
- *          N:  batch_size
- *          I:  input_dim
- *          H:  hidden_size
- *          dy:  [T,N,D*H] input gradient
- *          dhy: [L,D*N,H] input gradient
- *          x:  [T,N,I] input features
- *          hx: [L,D*N,H] initial hidden state
- *          wx: [L,D,I,3H]
- *          wh: [L,D,H,3H]
- *          dx: [T,N,I] output gradient
- *          dhx: [L,D*N,H] output gradient
- *          dwx: [L,D,I,3H] output gradient
- *          dwh: [L,D,H,3H] output gradient
- *          dbx: [L,D,3H] output gradient
- *          dbh: [L,D,3H] output gradient
- *          ws: workspace, reserved buffer & temporary buffer
- *          mode: specify the mode of implementation
- *
- * @desc: call different implementations of backward functions.
- *        (Currently, there is only sequential version.)
- *
- */
-/*
-int gru_xw_backward( int L,
-                     int T,
-                     int D,
-                     int N,
-                     int I,
-                     int H,
-                     float* dy,
-                     float* dhy,
-                     float* x,
-                     float* hx,
-                     float* wx,
-                     float* wh,
-                     float* dx,
-                     float* dhx,
-                     float* dwx,
-                     float* dwh,
-                     float* dbx,
-                     float* dbh,
-                     float* ws,
-                     int mode)
-{
-    double time[4] = {0,0,0,0};
-    assert( (dy != NULL) && "gru_xw_backward dy is NULL");
-    assert( (dhy != NULL) && "gru_xw_backward dhy is NULL");
-    assert( (x != NULL) && "gru_xw_backward x is NULL");
-    assert( (hx != NULL) && "gru_xw_backward hx is NULL");
-    assert( (wx != NULL) && "gru_xw_backward wx is NULL");
-    assert( (wh != NULL) && "gru_xw_backward wh is NULL");
-    assert( (dx != NULL) && "gru_xw_backward dx is NULL");
-    assert( (dhx != NULL) && "gru_xw_backward dhx is NULL");
-    assert( (dwx != NULL) && "gru_xw_backward dwx is NULL");
-    assert( (dwh != NULL) && "gru_xw_backward dwh is NULL");
-    gru_xw_seq_bwd(L, T, D, N, I, H, dy, dhy, x, hx, wx, wh, dx, dhx, dwx, 
-      dwh, dbx, dbh, ws, time);
-}*/
-
-int gru_xw_backward(RNNBackwardDesc desc){
-
-    double time[4] = {0,0,0,0};
-    gru_xw_seq_bwd(desc.L, desc.T, desc.D, desc.N, desc.I, desc.H, desc.dy, 
-        desc.dhy, desc.x, desc.hx, desc.wx, desc.wh, desc.dx, desc.dhx,
-        desc.dwx, desc.dwh, desc.dbx, desc.dbh, desc.ws, time);
-    
-}
-
-
-/*
- * @brief:  gru_xw_forward_prof
- *          add time parameter to function 'gru_xw_forward'
- */
-
-int  gru_xw_forward_prof(int L,
-                    int T,
-                    int D,
-                    int N,
-                    int I,
-                    int H,
-                    float* x,
-                    float* hx,
-                    float* wx,
-                    float* wh,
-                    float* bx,
-                    float* bh,
-                    float* y,
-                    float* hy,
-                    float* ws,
-                    int mode,
-                    double* time)
-{
-    gru_xw_seq_forward(L, T, D, N, I, H, x, hx, wx, wh, bx, bh, y, hy, ws, time);
-}
-
-/*
- * @brief:  gru_xw_backward_prof
- *          add time parameter to function 'gru_xw_backward'
- */
-int gru_xw_backward_prof( int L,
-                     int T,
-                     int D,
-                     int N,
-                     int I,
-                     int H,
-                     float* dy,
-                     float* dhy,
-                     float* x,
-                     float* hx,
-                     float* wx,
-                     float* wh,
-                     float* dx,
-                     float* dhx,
-                     float* dwx,
-                     float* dwh,
-                     float* dbx,
-                     float* dbh,
-                     float* ws,
-                     int mode,
-                     double* time)
-{
-    gru_xw_seq_bwd(L, T, D, N, I, H, dy, dhy, x, hx, wx, wh, dx, dhx, dwx, 
-      dwh, dbx, dbh, ws, time);
-}
-
  /*
  * @brief:  gru_xw_train_get_workspace_size
  *          get the size of buffer space for GRU training
@@ -919,10 +721,52 @@ int gru_xw_backward_prof( int L,
  *             hx_  [N,D,H]
  *
  */ 
-
-int gru_xw_train_get_workspace_size(int I, int H, int T, int N, int bi, int L)
+int gru_xw_train_get_workspace_size(int L, int D, int T, int N, int I, int H)
 {
-    int D = (bi==1)? 2:1;
     return 5 * L * T * D * N * H + 7 * N * H + 2 * T * N * 3 * H;
+}
+
+/*
+ * @brief:  gru_xw_forward
+ *          interface function of GRU forward
+ *
+ * @params: L:  num_layers
+ *          T:  seq_length
+ *          D:  direction, D = 2 if bidirectional else 1
+ *          N:  batch_size
+ *          I:  input_dim
+ *          H:  hidden_size
+ *          x:  [T,N,I] input features
+ *          hx: [L,D*N,H] initial hidden state
+ *          wx: [L,D,I,3H]
+ *          wh: [L,D,H,3H]
+ *          bx: [L,D,3H]
+ *          bh: [L,D,3H]
+ *          y:  [T,N,D*H] output features for the every step
+ *          hy: [L,D*N,H] output feature for the last time step
+ *          ws: workspace, reserved buffer & temporary buffer
+ *          mode: specify the mode of implementation
+ *
+ * @desc: call different implementations of forward functions.
+ *        (Currently, there is only sequential version.)
+ *
+ */
+
+int gru_xw_forward(RNNForwardDesc desc){
+
+    double time[4] = {0,0,0,0}; 
+    gru_xw_seq_forward(desc.L, desc.T, desc.D, desc.N, desc.I, desc.H, desc.x,
+        desc.hx, desc.wx, desc.wh, desc.bx, desc.bh, desc.y, desc.hy, desc.ws,
+        time);
+}
+
+
+int gru_xw_backward(RNNBackwardDesc desc){
+
+    double time[4] = {0,0,0,0};
+    gru_xw_seq_bwd(desc.L, desc.T, desc.D, desc.N, desc.I, desc.H, desc.dy, 
+        desc.dhy, desc.x, desc.hx, desc.wx, desc.wh, desc.dx, desc.dhx,
+        desc.dwx, desc.dwh, desc.dbx, desc.dbh, desc.ws, time);
+    
 }
 

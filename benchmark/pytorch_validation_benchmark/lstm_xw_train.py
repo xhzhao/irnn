@@ -10,7 +10,7 @@ import util
 import argparse
 parser = argparse.ArgumentParser(description='Process LSTM(xw) args.')
 parser.add_argument('--check', action='store_true', default=True, help='Turn on to enable cosim with original PyTorch LSTM implementation.')
-parser.add_argument('--bidirectional', action='store_true', default=False, help='Enable bi-directional LSTM')
+parser.add_argument('--bd', action='store_true', default=False, help='Enable bi-directional LSTM')
 parser.add_argument('--no_bias', action='store_true', default=False, help='GEMM with no bias.')
 parser.add_argument('--count', default=100, type=int)
 parser.add_argument('--forward_only', default=False, action='store_true', help='Enable forward only check')
@@ -23,7 +23,7 @@ args = parser.parse_args()
 print("args = ", args)
 
 check = args.check or 'check' in sys.argv
-bidirectional = args.bidirectional
+bidirectional = args.bd
 bias = not args.no_bias
 count = args.count
 forward_only = args.forward_only
@@ -35,39 +35,16 @@ if store_params and load_params:
     raise Exception('You\'re not allowed to store and load parameters at the same time!')
 
 sizes = [
-          [1, 2, 1, 1], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [1, 2, 2, 1], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [1, 2, 1, 2], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [1, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [2, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 2, 3, 4], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-          [3, 4, 5, 6], # Toy shape, for debugging purpose. You can comment this one if you have to do serious testing.
-         [64,30,500,500],
-         [64,40,500,500],
-         [64,45,500,500],
-         [64,50,500,500],
-         [20,50,800,800],
-         [20,100,800,800],
-         [20,150,800,800],
-         [20,200,800,800],
-#         [16,25,512,512],
-#         [32,25,512,512],
-#         [64,25,512,512],
-#         [128,25,512,512],
-#         [16,25,1024,1024],
-#         [32,25,1024,1024],
-#         [64,25,1024,1024],
-#         [128,25,1024,1024],
-#         [16,25,2048,2048],
-#         [32,25,2048,2048],
-#         [64,25,2048,2048],
-#         [128,25,2048,2048],
-#         [16,25,4096,4096],
-#         [32,25,4096,4096],
-#         [64,25,4096,4096],
-#         [128,25,4096,4096],
+          [1, 2, 1, 1],
+          [1, 2, 3, 4],
+          [2, 2, 3, 4],
+          [3, 2, 3, 4],
+          [3, 4, 5, 6], 
+          [64,30,500,500],
+          [20,100,800,800],
+          [16,25,1024,1024],
+          [16,25,2048,2048],
         ]
-#sizes = [[2,2,3,4]]
 grads = {}
 def save_grad(name):
     def hook(grad):
@@ -193,13 +170,15 @@ for idx in range(len(sizes)):
         rtn_y = np.allclose(ori_np, opt_np, 0.01, 1e-4)
         rtn_hy = np.allclose(ori_hy.data.numpy(), opt_hy.data.numpy(), 0.01, 1e-4)
         rtn_cy = np.allclose(ori_cy.data.numpy(), opt_cy.data.numpy(), 0.01, 1e-4)
-        print("fwd check = ", rtn_y, rtn_hy, rtn_cy)
-        if rtn_y is False or rtn_hy is False:
-            print("ori_y_np: {}".format(ori_y))
-            print("opt_y_np: {}".format(opt_y))
-            print("====================================")
-            print("ori_hy_np: {}".format(ori_hy))
-            print("opt_hy_np: {}".format(opt_hy))
+        rtn_fwd = all([rtn_y,rtn_hy,rtn_cy])
+        print("    fwd check = ", rtn_fwd)
+        if rtn_fwd is False:
+            print("    fwd check = ", [rtn_y,rtn_hy,rtn_cy])
+            print("    ori_y_np: {}".format(ori_y))
+            print("    opt_y_np: {}".format(opt_y))
+            print("    ====================================")
+            print("    ori_hy_np: {}".format(ori_hy))
+            print("    opt_hy_np: {}".format(opt_hy))
 
         ori_y.register_hook(save_grad('ori_y'))
         opt_y.register_hook(save_grad('opt_y'))
@@ -238,17 +217,17 @@ for idx in range(len(sizes)):
             name_list  = ['input', 'hx', 'Wx', 'bx', 'Wh', 'bh']          
             result_list = [input_grad_equal, hx_grad_equal, Wx_grad_equal, bx_grad_equal, Wh_grad_equal, bh_grad_equal]
             rtn = all(result_list)                                              
-            print("bwd check = ", rtn)     
+            print("    bwd check = ", rtn)     
             if rtn is False:
-                print("bwd check = ", result_list)     
-                print("ori_hy.grad sum = %.6f" % (grads['ori_hy'].data.sum()))
-                print("opt_hy.grad sum = %.6f" %(grads['opt_hy'].data.sum()))
-                print("ori_y.grad sum = %.6f" % (grads['ori_y'].data.sum()))
-                print("opt_y.grad sum = %.6f" % (grads['opt_y'].data.sum()))
-                print("ori_input.grad:", ori_input.grad.size(), ori_input.grad.data.sum())
-                print("opt_input.grad:", opt_input.grad.size(), opt_input.grad.data.sum())
-                print("ori_hx.grad:", ori_hx.grad.size(), ori_hx.grad.data.sum())
-                print("opt_hx.grad:", opt_hx.grad.size(), opt_hx.grad.data.sum())
-                print("ori_cx.grad:", ori_cx.grad.size(), ori_cx.grad.data.sum())
-                print("opt_cx.grad:", opt_cx.grad.size(), opt_cx.grad.data.sum())
+                print("    bwd check = ", result_list)     
+                print("    ori_hy.grad sum = %.6f" % (grads['ori_hy'].data.sum()))
+                print("    opt_hy.grad sum = %.6f" %(grads['opt_hy'].data.sum()))
+                print("    ori_y.grad sum = %.6f" % (grads['ori_y'].data.sum()))
+                print("    opt_y.grad sum = %.6f" % (grads['opt_y'].data.sum()))
+                print("    ori_input.grad:", ori_input.grad.size(), ori_input.grad.data.sum())
+                print("    opt_input.grad:", opt_input.grad.size(), opt_input.grad.data.sum())
+                print("    ori_hx.grad:", ori_hx.grad.size(), ori_hx.grad.data.sum())
+                print("    opt_hx.grad:", opt_hx.grad.size(), opt_hx.grad.data.sum())
+                print("    ori_cx.grad:", ori_cx.grad.size(), ori_cx.grad.data.sum())
+                print("    opt_cx.grad:", opt_cx.grad.size(), opt_cx.grad.data.sum())
 
