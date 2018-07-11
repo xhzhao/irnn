@@ -76,20 +76,21 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
     int algo = 0;
     RNNForwardDesc desc_fwd = {L, D, T, N, I, H, ws, x, hx, cx, wx, wh, bx, bh, y, hy, cy, algo};
     RNNBackwardDesc desc_bwd;
+    float *dx, *dhx, *dcx, *dwx, *dwh, *dbx, *dbh, *dy, *dhy, *dcy;
 
     if(is_train){
-        float* dx  = (float*)mkl_malloc(T * N * I * sizeof(float), align);
-        float* dhx = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
-        float* dcx = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
+        dx  = (float*)mkl_malloc(T * N * I * sizeof(float), align);
+        dhx = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
+        dcx = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
 
-        float* dwx = (float*)mkl_malloc(L * D * I * Gate * H * sizeof(float), align);
-        float* dwh = (float*)mkl_malloc(L * D * H * Gate * H * sizeof(float), align);
-        float* dbx = (float*)mkl_malloc(L * D * Gate * H * sizeof(float), align);
-        float* dbh = (float*)mkl_malloc(L * D * Gate * H * sizeof(float), align);
+        dwx = (float*)mkl_malloc(L * D * I * Gate * H * sizeof(float), align);
+        dwh = (float*)mkl_malloc(L * D * H * Gate * H * sizeof(float), align);
+        dbx = (float*)mkl_malloc(L * D * Gate * H * sizeof(float), align);
+        dbh = (float*)mkl_malloc(L * D * Gate * H * sizeof(float), align);
 
-        float* dy  = (float*)mkl_malloc(T * N * D * H * sizeof(float), align);
-        float* dhy = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
-        float* dcy = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
+        dy  = (float*)mkl_malloc(T * N * D * H * sizeof(float), align);
+        dhy = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
+        dcy = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
 
         //buffer init
         buffer_init(dy,  T * N * D * H);
@@ -116,6 +117,31 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
     double dura = end - start;
     float SPS = N * count / dura;
     printf("L = %d, D = %d, N = %d, T = %d, I = %d, H = %d, SPS = %.4f\n", L, D, N, T, I, H, SPS);
+
+    // free memory
+    mkl_free(ws);
+    mkl_free(x);
+    mkl_free(hx);
+    mkl_free(cx);
+    mkl_free(wx);
+    mkl_free(wh);
+    mkl_free(bx);
+    mkl_free(bh);
+    mkl_free(y);
+    mkl_free(hy);
+    mkl_free(cy);
+    if(is_train){
+        mkl_free(dx);
+        mkl_free(dhx);
+        mkl_free(dcx);
+        mkl_free(dwx);
+        mkl_free(dwh);
+        mkl_free(dbx);
+        mkl_free(dbh);
+        mkl_free(dy);
+        mkl_free(dhy);
+        mkl_free(dcy);
+    }
 }
 
 
