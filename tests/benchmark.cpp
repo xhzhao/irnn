@@ -116,7 +116,7 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
     end = dsecnd();
     double dura = end - start;
     float SPS = N * count / dura;
-    double one_iter = D * Gate * (N * H * I * 2 + N * H * H * 2) / 1e6;
+    double one_iter = D * Gate * (N * H * I * 2 + N * H * H * 2) * 3 / 1e6;
     double GFLOPS = count * one_iter * T * L / dura / 1e3;
     printf("L = %d, D = %d, N = %d, T = %d, I = %d, H = %d, GFLOPS = %.4f, SPS = %.4f\n", L, D, N, T, I, H, GFLOPS, SPS);
 
