@@ -5,6 +5,7 @@
 ****
   * Pytorch
   * conda install mkl mkl-include
+  * icc (if you only have gcc, please modify the CMakeList.txt line1 and line2)
 
 
 
