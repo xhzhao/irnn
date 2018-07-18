@@ -33,8 +33,8 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
             call_forward = gru_xw_forward;
             call_backward = gru_xw_backward;
         }else{
-            ws_size = gru_xw_infer_get_workspace_size(L, D, T, N, I, H);
-            call_forward = gru_xw_infer;
+            ws_size = gru_xw_train_get_workspace_size(L, D, T, N, I, H);
+            call_forward = gru_xw_forward;
         }
     }else if(cell_type == "lstm"){
         if(is_train){
@@ -116,7 +116,12 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
     end = dsecnd();
     double dura = end - start;
     float SPS = N * count / dura;
-    double one_iter = (N * H * I * 2 + N * H * H * 2) / 1e6 * D * Gate * 3;
+    double one_iter = 0;
+    if(is_train){
+        one_iter = (N * H * I * 2 + N * H * H * 2) / 1e6 * D * Gate * 3;
+    }else{
+        one_iter = (N * H * I * 2 + N * H * H * 2) / 1e6 * D * Gate ;
+    }
     double GFLOPS = count * one_iter * T * L / dura / 1e3;
     printf("L = %d, D = %d, N = %d, T = %d, I = %d, H = %d, GFLOPS = %.4f, SPS = %.4f\n", L, D, N, T, I, H, GFLOPS, SPS);
 
@@ -169,30 +174,13 @@ int main(int argc, char ** argv)
     int D = (direction == "bd") ? 2 : 1;
 
     /* N, T, I ,H*/
-    int size[18][4] = {                                                        
-         {20,1,800,800},                                                        
-         {20,50,800,800},                                                       
-         {20,100,800,800},                                                  
-         {20,200,800,800},
-         {20,300,800,800},
-         {20,400,800,800},
-         {12,1,1760,1760},
-         {12,50,1760,1760},
-         {12,100,1760,1760},
-         {12,200,1760,1760},
-         {12,300,1760,1760},
-         {12,400,1760,1760},
-         {32,1,1760,1760},
-         {32,50,1760,1760},
-         {32,100,1760,1760},                                                 
-         {32,200,1760,1760},
-         {32,300,1760,1760},
-         {32,400,1760,1760}
+    int size[1][4] = {                                                        
+         {20,100,800,800}
     };      
 
     int L = 1;
     int i = 0;
-    for(i = 0; i < 18; i++){
+    for(i = 0; i < 1; i++){
         test_main(is_train, cell_type, L, D, size[i][1], size[i][0], size[i][2], size[i][3]);
     }
 
