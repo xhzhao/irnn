@@ -600,8 +600,9 @@ void gru_xw_single_bwd(int T, int D, int N, int I, int H,
     // dwx = xt.T * da    [I,3H] = [I,N] * [N,3H]
     cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, I, 3 * H, T*N, 1, x, 
       I, da, 3 * H, 0, back_dwx, 3 * H);
-    }
     t_bg += dsecnd() - start;
+    }
+
 
     start = dsecnd();
     #pragma omp parallel for
@@ -748,7 +749,15 @@ int gru_xw_train_get_workspace_size(int L, int D, int T, int N, int I, int H)
 
 int gru_xw_forward(RNNForwardDesc desc){
 
-    double time[4] = {0,0,0,0}; 
+    double * time;
+    double time_local[4] = {0,0,0,0}; 
+    if (desc.time != NULL){
+        //printf("using input time \n");
+        time = desc.time;
+    } else {
+        //printf("using local time \n");
+        time = time_local;
+    }
     gru_xw_seq_forward(desc.L, desc.T, desc.D, desc.N, desc.I, desc.H, desc.x,
         desc.hx, desc.wx, desc.wh, desc.bx, desc.bh, desc.y, desc.hy, desc.ws,
         time);
@@ -757,7 +766,15 @@ int gru_xw_forward(RNNForwardDesc desc){
 
 int gru_xw_backward(RNNBackwardDesc desc){
 
-    double time[4] = {0,0,0,0};
+    double * time;
+    double time_local[4] = {0,0,0,0}; 
+    if (desc.time != NULL){
+        //printf("using input time \n");
+        time = desc.time;
+    } else {
+        //printf("using local time \n");
+        time = time_local;
+    }
     gru_xw_seq_bwd(desc.L, desc.T, desc.D, desc.N, desc.I, desc.H, desc.dy, 
         desc.dhy, desc.x, desc.hx, desc.wx, desc.wh, desc.dx, desc.dhx,
         desc.dwx, desc.dwh, desc.dbx, desc.dbh, desc.ws, time);

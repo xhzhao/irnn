@@ -34,6 +34,7 @@ typedef struct ForwardDesc{
     float * hy;
     float * cy;
     int algo;
+    double * time; 
 } RNNForwardDesc;
 
 typedef struct BackwardDesc{
@@ -63,6 +64,7 @@ typedef struct BackwardDesc{
     float * dhy;
     float * dcy;
     int algo;
+    double * time; 
 } RNNBackwardDesc;
 
 

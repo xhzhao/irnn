@@ -64,6 +64,10 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
     float* hy = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
     float* cy = (float*)mkl_malloc(L * D * N * H * sizeof(float), align);
 
+    // malloc buffer for time
+    double* time_fwd  = (double*)malloc(4 * sizeof(double));
+    double* time_bwd  = (double*)malloc(4 * sizeof(double));
+
     //buffer init
     buffer_init(x, T * N * I);
     buffer_init(hx, L * D * N * H);
@@ -72,6 +76,10 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
     buffer_init(wh, L * D * H * Gate * H);
     buffer_init(bx, L * D * Gate * H);
     buffer_init(bh, L * D * Gate * H);
+    for(int i = 0; i < 4; i++){
+        time_fwd[i] = 0;
+        time_bwd[i] = 0;
+    }
 
     int algo = 0;
     RNNForwardDesc desc_fwd = {L, D, T, N, I, H, ws, x, hx, cx, wx, wh, bx, bh, y, hy, cy, algo};
@@ -98,7 +106,7 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
         buffer_init(dcy, L * D * N * H);
 
         desc_bwd = {L, D, T, N, I, H, ws, x, hx, cx, wx, wh, y, hy, cy,
-            dx, dhx, dcx, dwx, dwh, dbx, dbh, dy, dhy, dcy, algo};
+            dx, dhx, dcx, dwx, dwh, dbx, dbh, dy, dhy, dcy, algo}, time_bwd;
     }
     
     int i = 0;
@@ -106,6 +114,10 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
     for(i = 0; i < warmup + count; ++i){
         if(i == warmup){
             start = dsecnd();
+            desc_fwd.time = time_fwd;
+            if(is_train){
+                desc_bwd.time = time_bwd;
+            }
         }
         call_forward(desc_fwd);
         if(is_train){
@@ -124,6 +136,10 @@ int test_main(int is_train, std::string cell_type, int L, int D, int T, int N, i
     }
     double GFLOPS = count * one_iter * T * L / dura / 1e3;
     printf("L = %d, D = %d, N = %d, T = %d, I = %d, H = %d, GFLOPS = %.4f, SPS = %.4f\n", L, D, N, T, I, H, GFLOPS, SPS);
+    printf("GRU forward: cp = %.4f, ew = %.4f, sg = %.4f, bg = %.4f \n", time_fwd[0], time_fwd[1], time_fwd[2], time_fwd[3]);
+    if(is_train){
+        printf("GRU backward: cp = %.4f, ew = %.4f, sg = %.4f, bg = %.4f \n", time_bwd[0], time_bwd[1], time_bwd[2], time_bwd[3]);
+    }
 
     // free memory
     mkl_free(ws);
