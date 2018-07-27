@@ -8,14 +8,14 @@
 #include <rnn.h>                                                                
 #include <mkl.h>                                                                
 
-#define warmup 20                                                                               
-#define count 100
+#define warmup 1                                                                               
+#define count 1000
 #define align 64
 
 void buffer_init(float * buf, int size){
     int i = 0;
     for(int i = 0; i < size; ++i){
-        buf[i] = ((float)rand()/(float)RAND_MAX) - ((float)rand()/(float)RAND_MAX);
+        buf[i] = 1.0; //((float)rand()/(float)RAND_MAX) - ((float)rand()/(float)RAND_MAX);
     }
 }
 
