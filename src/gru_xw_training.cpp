@@ -96,7 +96,7 @@ void elemwise_opt(int D, int N, int H, float* rt, float* nt, float* zt,
 
 }
 
-typedef struct thread_para{
+typedef struct fwd_thread_para{
     int T;
     int D;
     int N;
@@ -116,14 +116,13 @@ typedef struct thread_para{
     float* Mnh;
     float* ws;
     int d;
-}ThreadPara;
+}FwdThreadPara;
 
 
 #define COUNT 1
-#define HALF_OMP_THREADS 20
-void* thread_one_direction(void * p){
+void* fwd_thread_one_direction(void * p){
 
-    ThreadPara* para = (ThreadPara*)p;
+    FwdThreadPara* para = (FwdThreadPara*)p;
     int T = para->T;
     int D = para->D;
     int N = para->N;
@@ -175,13 +174,11 @@ void* thread_one_direction(void * p){
 
     int cores = 40 ? (D==1):20;
     if(D == 1){
-        //mkl_set_num_threads_local(40);
         omp_set_num_threads(40);
     }else{
         mkl_set_num_threads_local(20);
         omp_set_num_threads(20);
     }
-    //omp_set_num_threads(cores);
 
     if(d == 0){
         //bind pthread to socket2
@@ -209,14 +206,12 @@ void* thread_one_direction(void * p){
             //  ht-1*wh, ht-1:[N,H] wh:[H, 3H]
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, m, n, H, 1, 
                         ht_1, D*H, wh, n, 0.0, gemmC2, n);
-            
             rt = gateR + t * N * H;
             zt = gateZ + t * N * H;
             nt = gateN + t * N * H;
             gemmC1_t = gemmC1 + t * N * 3 * H;
             float* Mnht = Mnh + t * N * H;
             elemwise_opt(D, N, H, rt, nt, zt, gemmC1_t, gemmC2, Mnht, bx, bh, ht, ht_1);
-    
             ht_1 = ht;
             ht = ht + D * H * N;
         }
@@ -235,7 +230,6 @@ void* thread_one_direction(void * p){
             CPU_SET(i, &cpuset);
         }
         pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-
         #pragma omp parallel for collapse(2)
         for (int i = 0; i < N; i++){
             for (int j = 0; j < H; j++) {
@@ -264,15 +258,16 @@ void* thread_one_direction(void * p){
                 hy[N * H + i * H + j] = y_back_start[i * D * H + j];
             }
         }
-
     }
     }
+#if 0
     double dura = (get_time() - start) /1e3;                                                  
     float SPS = N * COUNT / dura;                                               
     double one_iter = 0;                                                        
     one_iter = (N * H * I * 2 + N * H * H * 2) / 1e6 * 3;            
     double GFLOPS = COUNT * one_iter * T / dura / 1e3;                      
-    //printf("thread inside d = %d, L = 1, D = %d, N = %d, T = %d, I = %d, H = %d, GFLOPS = %.4f, SPS = %.4f\n", d, D, N, T, I, H, GFLOPS, SPS);
+    printf("thread inside d = %d, L = 1, D = %d, N = %d, T = %d, I = %d, H = %d, GFLOPS = %.4f, SPS = %.4f\n", d, D, N, T, I, H, GFLOPS, SPS);
+#endif
 
 
 }
@@ -327,9 +322,9 @@ void gru_forward_single_sequential(int T, int D, int N, int I, int H,
     pthread_t thread1, thread2;
     int err1 = 0;
     int err2 = 0;
-    ThreadPara* para1 = NULL;
-    ThreadPara* para2 = NULL;
-    para1 = (ThreadPara*)malloc(sizeof(ThreadPara));
+    FwdThreadPara* para1 = NULL;
+    FwdThreadPara* para2 = NULL;
+    para1 = (FwdThreadPara*)malloc(sizeof(FwdThreadPara));
     para1->T = T;
     para1->D = D;
     para1->N = N;
@@ -355,13 +350,13 @@ void gru_forward_single_sequential(int T, int D, int N, int I, int H,
 
     // if threadid is not avaliable, create the thread
 
-    err1 = pthread_create(&thread1, NULL, thread_one_direction, para1);
+    err1 = pthread_create(&thread1, NULL, fwd_thread_one_direction, para1);
     // create thread for ud
     if(D ==2){
-        para2 = (ThreadPara*)malloc(sizeof(ThreadPara));
-        memcpy(para2, para1, sizeof(ThreadPara));
+        para2 = (FwdThreadPara*)malloc(sizeof(FwdThreadPara));
+        memcpy(para2, para1, sizeof(FwdThreadPara));
         para2->d = 1;
-        err2 = pthread_create(&thread2, NULL, thread_one_direction, para2);
+        err2 = pthread_create(&thread2, NULL, fwd_thread_one_direction, para2);
     }
     // wait for the threat job done, children thread alwasy running
     if(err1 | err2){
@@ -499,44 +494,67 @@ void gru_xw_seq_forward(int L, int T, int D, int N, int I, int H,
  *            dbrx = dbrh = sum(dar,axis=0)
  */
 
-void gru_xw_single_bwd(int T, int D, int N, int I, int H,
-            float* x,  //[T,N,I]
-            float* hx, //[D*N,H]
-            float* y,  //[T,N,D,H]
-            float* wx, //[I,3H]
-            float* wh, //[H,3H]
-   /*out*/  float* dwx, //[I,3H]
-            float* dwh, //[H,3H]
-            float* dx,  //[T,N,I]
-            float* dhx, //[D,N,H]
-            float* dbx, //[1,3H]
-            float* dbh,
-            float* dy, //[T,N,D,H] 
-            float* dhy, //[D,N,H] 
-            float* gateR, //[T,D,N,H]
-            float* gateZ, //[T,D,N,H]
-            float* gateN, //[T,D,N,H]
-            float* Mnh, //[D,T,N,H]
-            float* ws //D * (N*3H + N*H + N*H)
-            )
-{  
+typedef struct bwd_thread_para{
+    int T;
+    int D;
+    int N;
+    int I;
+    int H;
+    float* x;
+    float* hx;
+    float* wx;
+    float* wh;
+    float* y;
+    float* dwx;
+    float* dwh;
+    float* dx;
+    float* dhx;
+    float* dbx;
+    float* dbh;
+    float* dy;
+    float* dhy;
+    float* gateR;
+    float* gateZ;
+    float* gateN;
+    float* Mnh;
+    float* ws;
+    int d;
+}BwdThreadPara;
+
+void* bwd_thread_one_direction(void * p){
+    BwdThreadPara* para = (BwdThreadPara*)p;
+    int T = para->T;
+    int D = para->D;
+    int N = para->N;
+    int I = para->I;
+    int H = para->H;
+    int d = para->d;
+    float* x = para->x;
+    float* hx = para->hx;
+    float* y  = para->y;
+    float* wx = para->wx;
+    float* wh = para->wh;
+    float* dwx = para->dwx;
+    float* dwh = para->dwh;
+    float* dx = para->dx;
+    float* dhx = para->dhx;
+    float* dbx = para->dbx;
+    float* dbh = para->dbh;
+    float* dy = para->dy;
+    float* dhy = para->dhy;
+    float* gateR = para->gateR;
+    float* gateZ = para->gateZ;
+    float* gateN = para->gateN;
+    float* Mnh = para->Mnh;
+    float* ws = para->ws;
+
     int i,j,t;
     double start;
     double t_ew = 0;
     double t_cp = 0;
     double t_sg = 0;
     double t_bg = 0;
-    #pragma omp parallel for
-    for(i = 0; i < D * H * 3 * H; ++i){
-        dwh[i]=0;
-    }
-    if(dbx and dbh){
-        #pragma omp parallel for
-        for(i = 0; i < D * 3 * H; ++i){
-            dbx[i]=0;
-            dbh[i]=0;
-        }
-    }
+
     float* dyt;
     float* ht1;//[N,D,H]
     float* back_ht1;//not necessary
@@ -547,9 +565,9 @@ void gru_xw_single_bwd(int T, int D, int N, int I, int H,
     float* nt;
     float* dat;
     float* dart;
-    float* dar = ws; //[T,N,3H]
-    float* da = dar + T * N * 3 * H; //[T,N,3H]
-    float* dht1 = da + T * N * 3 * H;  //[D,N,H]
+    float* dar = ws; //[D,T,N,3H]
+    float* da = dar + D * T * N * 3 * H; //[D,T,N,3H]
+    float* dht1 = da + D * T * N * 3 * H;  //[D,N,H]
     float* hx_ = dht1 + D * N * H; //[N,D,H] 
     float* back_dht1 = dht1 + N*H; //[N,H]
     float* Mnht = Mnh;
@@ -563,166 +581,300 @@ void gru_xw_single_bwd(int T, int D, int N, int I, int H,
     float* back_dwh = dwh + H*3*H;
     float* back_dbx = dbx + 3*H;
     float* back_dbh = dbh + 3*H;
-    #pragma omp parallel for
-    for(i = 0; i < N * H; ++i){
-        dht1[i] = dhy[i];
+    float* back_dar = dar + T * N * 3 * H;
+    float* back_da = da + T * N * 3 * H;
+    float* back_dat;
+    float* back_dart;
+    if(D == 1){
+        omp_set_num_threads(40);
+    }else{
+        mkl_set_num_threads_local(20);
+        omp_set_num_threads(20);
     }
-    #pragma omp parallel for collapse(2)
-    for(i=0; i < N; ++i){
-        for(j=0; j < H; ++j){
-            hx_[i*D*H+j] = hx[i*H+j];
+
+    if(d == 0){
+        if(D ==2){
+            cpu_set_t cpuset;
+            pthread_t thread = pthread_self();
+            CPU_ZERO(&cpuset);
+            for (int i = 20; i < 40; i++){
+                CPU_SET(i, &cpuset);
+            }
+            pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
         }
-    }
-    if(D==2){
         #pragma omp parallel for
-        for(i = 0; i < N * H; ++i){
-            back_dht1[i] = dhy[N*H + i];
+        for(i = 0; i <  H * 3 * H; ++i){
+            dwh[i]=0;
+        }
+        if(dbx and dbh){
+            #pragma omp parallel for
+            for(i = 0; i < 3 * H; ++i){
+                dbx[i]=0;
+                dbh[i]=0;
+            }
+        }
+        #pragma omp parallel for collapse(2)
+        for(i=0; i < N; ++i){
+            for(j=0; j < H; ++j){
+                hx_[i*D*H+j] = hx[i*H+j];
+                dht1[i * H + j] = dhy[i * H + j];
+            }
+        }
+    }else if(d == 1){
+        if(D ==2){
+            cpu_set_t cpuset;
+            pthread_t thread = pthread_self();
+            CPU_ZERO(&cpuset);
+            for (int i = 0; i < 20; i++){
+                CPU_SET(i, &cpuset);
+            }
+            pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+        }
+        #pragma omp parallel for
+        for(i = H * 3 * H; i < D * H * 3 * H; ++i){
+            dwh[i]=0;
+        }
+        if(dbx and dbh){
+            #pragma omp parallel for
+            for(i = 3 * H; i < D * 3 * H; ++i){
+                dbx[i]=0;
+                dbh[i]=0;
+            }
         }
         #pragma omp parallel for collapse(2)
         for(i=0; i < N; ++i){
             for(j=0; j < H; ++j){
                 hx_[i*D*H + H + j] = hx[N*H + i*H + j];
+                back_dht1[i * H + j] = dhy[N * H + i * H + j];
             }
         }
     }
-    for(t = T - 1; t >= 0; --t){
-        if(t){
-            ht1 = y + (t-1) * N * D * H;
+    if(d == 0){
+        for(t = T - 1; t >= 0; --t){
+            if(t){
+                ht1 = y + (t-1) * N * D * H;
+            }
+            else{
+                ht1 = hx_;
+            }
+            //add dy[T,N,D,H] to dhy[D,N,H]
+            dyt = dy + t * N * D * H;
+            #pragma omp parallel for collapse(2)
+            for(i=0; i < N; ++i){
+                for(j=0; j < H; ++j){
+                    dht1[i*H+j] += dyt[i*D*H+j];
+                }
+            }
+
+            rt = gateR + t * N * H;
+            zt = gateZ + t * N * H;
+            nt = gateN + t * N * H;
+            Mnht = Mnh +  t * N * H;
+            dat = da + t * N * 3 * H;
+            dart = dar + t * N * 3 * H;
+            #pragma omp parallel for collapse(2)
+            for( i=0; i < N; ++i){
+                for( j=0; j < H; ++j){
+                    int nid = i * 3 * H + 2 * H + j;
+                    int zid = i * 3 * H + H + j;
+                    int rid = i * 3 * H + j;
+                    int id = i * H + j;
+                    dat[nid] = dht1[id] * (1 - zt[id]) * (1 - nt[id] * nt[id]);
+                    dart[zid] = dat[zid] = dht1[id] * (ht1[i*D*H + j] - nt[id]) * 
+                      zt[id] * (1 - zt[id]);
+                    dart[rid] = dat[rid] = dat[nid] * Mnht[id] * rt[id] * 
+                      (1 - rt[id]);
+                    dart[nid] = dat[nid] * rt[id];
+                    dht1[id] = dht1[id] * zt[id];
+                }
+            }
+
+            // dht1 = da * wh.T    [N,H] = [N,3H] * [3H,H]
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N, H, 3 * H, 1.0, 
+              dart, 3 * H, wh, 3 * H, 1.0, dht1, H);
+
+            // dwh = ht1.T * da    [H,3H] = [H,N] * [N,3H]
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, 3 * H, 
+              N, 1, ht1, D*H, dart, 3 * H, 1, dwh, 3 * H);
         }
-        else{
-            ht1 = hx_;
-        }
-        //add dy[T,N,D,H] to dhy[D,N,H]
-        dyt = dy + t * N * D * H;
-        #pragma omp parallel for collapse(2)
-        for(i=0; i < N; ++i){
-            for(j=0; j < H; ++j){
-                dht1[i*H+j] += dyt[i*D*H+j];
+        // dbx = e * da       [1,3H] = [1,N] * [N,3H]
+        if(dbx and dbh){
+            #pragma omp parallel for
+            for(i = 0; i < 3 * H; ++i){
+                for(j = 0; j < N * T; ++j){
+                    dbx[i] += da[j * 3 * H + i];
+                    dbh[i] += dar[j * 3 * H + i];
+                }
             }
         }
-
-        rt = gateR + t * N * H;
-        zt = gateZ + t * N * H;
-        nt = gateN + t * N * H;
-        Mnht = Mnh +  t * N * H;
-        dat = da + t * N * 3 * H;
-        dart = dar + t * N * 3 * H;
-        #pragma omp parallel for collapse(2)
-        for( i=0; i < N; ++i){
-            for( j=0; j < H; ++j){
-                int nid = i * 3 * H + 2 * H + j;
-                int zid = i * 3 * H + H + j;
-                int rid = i * 3 * H + j;
-                int id = i * H + j;
-                dat[nid] = dht1[id] * (1 - zt[id]) * (1 - nt[id] * nt[id]);
-                dart[zid] = dat[zid] = dht1[id] * (ht1[i*D*H + j] - nt[id]) * 
-                  zt[id] * (1 - zt[id]);
-                dart[rid] = dat[rid] = dat[nid] * Mnht[id] * rt[id] * 
-                  (1 - rt[id]);
-                dart[nid] = dat[nid] * rt[id];
-                dht1[id] = dht1[id] * zt[id];
-            }
-        }
-
-        // dht1 = da * wh.T    [N,H] = [N,3H] * [3H,H]
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N, H, 3 * H, 1.0, 
-          dart, 3 * H, wh, 3 * H, 1.0, dht1, H);
-
-        // dwh = ht1.T * da    [H,3H] = [H,N] * [N,3H]
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, 3 * H, 
-          N, 1, ht1, D*H, dart, 3 * H, 1, dwh, 3 * H);
-    }
-    // dbx = e * da       [1,3H] = [1,N] * [N,3H]
-    if(dbx and dbh){
+        //}
+        // dx = da * wx.T    [T*N,I] = [T*N,3H] * [3H,I]
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T*N, I, 3 * H, 1, 
+          da, 3 * H, wx, 3 * H, 0, dx, I);
+        // dwx = x.T * da    [I,3H] = [I,T*N] * [T*N,3H]
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, I, 3 * H, T*N, 1, x, 
+          I, da, 3 * H, 0, dwx, 3 * H);
         #pragma omp parallel for
-        for(i = 0; i < 3 * H; ++i){
-            for(j = 0; j < N * T; ++j){
-                dbx[i] += da[j * 3 * H + i];
-                dbh[i] += dar[j * 3 * H + i];
-            }
+        for(i = 0; i <  N * H; ++i){
+            dhx[i] = dht1[i];
         }
-    }
-    //}
-    // dx = da * wx.T    [T*N,I] = [T*N,3H] * [3H,I]
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T*N, I, 3 * H, 1, 
-      da, 3 * H, wx, 3 * H, 0, dx, I);
-    // dwx = x.T * da    [I,3H] = [I,T*N] * [T*N,3H]
-    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, I, 3 * H, T*N, 1, x, 
-      I, da, 3 * H, 0, dwx, 3 * H);
 
-    if(D==2){
-    for(t = 0; t < T; ++t){
-        if(t == T-1){
-            back_ht1 = hx_;
-        }
-        else{
-            back_ht1 = y + (t+1) * N * D * H;
-        }
-        //add dy[T,N,D,H] to dhy[D,N,H]
-        dyt = dy + t * N * D * H;
-        #pragma omp parallel for collapse(2)
-        for(i=0; i < N; ++i){
-            for(j=0; j < H; ++j){
-                back_dht1[i*H+j] += dyt[i*D*H + H + j];
-            }
-        }
-        rt = back_gateR + t * N * H;
-        zt = back_gateZ + t * N * H;
-        nt = back_gateN + t * N * H;
-        back_Mnht = Mnh + (T+t)*N*H;
-        dat = da + t * N * 3 * H;
-        dart = dar + t * N * 3 * H;
-        #pragma omp parallel for collapse(2)
-        for( i=0; i < N; ++i){
-            for( j=0; j < H; ++j){
-                int nid = i * 3 * H + 2 * H + j;
-                int zid = i * 3 * H + H + j;
-                int rid = i * 3 * H + j;
-                int id = i * H + j;
-                dat[nid] = back_dht1[id] * (1 - zt[id]) * (1 - nt[id] * nt[id]);
-                dart[zid] = dat[zid] = back_dht1[id] * (back_ht1[i*D*H + H + j] - 
-                  nt[id]) * zt[id] * (1 - zt[id]);
-                dart[rid] = dat[rid] = dat[nid] * back_Mnht[id] * rt[id] * 
-                  (1 - rt[id]);
-                dart[nid] = dat[nid] * rt[id];
-                back_dht1[id] = back_dht1[id] * zt[id];
-            }
-        }
-        // dht1 = da * wh.T    [N,H] = [N,3H] * [3H,H]
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N, H, 3 * H, 1, 
-          dart, 3 * H, back_wh, 3 * H, 1, back_dht1, H);
-        // dwh = ht1.T * da    [H,3H] = [H,N] * [N,3H]
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, 3 * H, 
-          N, 1, back_ht1+H, D*H, dart, 3 * H, 1, back_dwh, 3 * H);
     }
-    // dbx = e * da       [1,3H] = [1,N] * [N,3H]
-    if(dbx and dbh){
+    if(d == 1){
+        for(t = 0; t < T; ++t){
+            if(t == T-1){
+                back_ht1 = hx_;
+            }
+            else{
+                back_ht1 = y + (t+1) * N * D * H;
+            }
+            //add dy[T,N,D,H] to dhy[D,N,H]
+            dyt = dy + t * N * D * H;
+            #pragma omp parallel for collapse(2)
+            for(i=0; i < N; ++i){
+                for(j=0; j < H; ++j){
+                    back_dht1[i*H+j] += dyt[i*D*H + H + j];
+                }
+            }
+            rt = back_gateR + t * N * H;
+            zt = back_gateZ + t * N * H;
+            nt = back_gateN + t * N * H;
+            back_Mnht = Mnh + (T+t)*N*H;
+            dat = back_da + t * N * 3 * H;
+            dart = back_dar + t * N * 3 * H;
+            #pragma omp parallel for collapse(2)
+            for( i=0; i < N; ++i){
+                for( j=0; j < H; ++j){
+                    int nid = i * 3 * H + 2 * H + j;
+                    int zid = i * 3 * H + H + j;
+                    int rid = i * 3 * H + j;
+                    int id = i * H + j;
+                    dat[nid] = back_dht1[id] * (1 - zt[id]) * (1 - nt[id] * nt[id]);
+                    dart[zid] = dat[zid] = back_dht1[id] * (back_ht1[i*D*H + H + j] - 
+                      nt[id]) * zt[id] * (1 - zt[id]);
+                    dart[rid] = dat[rid] = dat[nid] * back_Mnht[id] * rt[id] * 
+                      (1 - rt[id]);
+                    dart[nid] = dat[nid] * rt[id];
+                    back_dht1[id] = back_dht1[id] * zt[id];
+                }
+            }
+            // dht1 = da * wh.T    [N,H] = [N,3H] * [3H,H]
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, N, H, 3 * H, 1, 
+              dart, 3 * H, back_wh, 3 * H, 1, back_dht1, H);
+            // dwh = ht1.T * da    [H,3H] = [H,N] * [N,3H]
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, H, 3 * H, 
+              N, 1, back_ht1+H, D*H, dart, 3 * H, 1, back_dwh, 3 * H);
+
+        }
+        // dbx = e * da       [1,3H] = [1,N] * [N,3H]
+        if(dbx and dbh){
+            #pragma omp parallel for
+            for(i = 0; i < 3 * H; ++i){
+                for(j = 0; j < N * T; ++j){
+                    back_dbx[i] += back_da[j * 3 * H + i];
+                    back_dbh[i] += back_dar[j * 3 * H + i];
+                }
+            }
+        }
+
+        // dwx = xt.T * da    [I,3H] = [I,N] * [N,3H]
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, I, 3 * H, T*N, 1, x, 
+          I, back_da, 3 * H, 0, back_dwx, 3 * H);
+
+        // dxt = da * wx.T    [T*N,I] = [T*N,3H] * [3H,I]
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T*N, I, 3 * H, 1, 
+            back_da, 3 * H, back_wx, 3 * H, 1, dx, I);
         #pragma omp parallel for
-        for(i = 0; i < 3 * H; ++i){
-            for(j = 0; j < N * T; ++j){
-                back_dbx[i] += da[j * 3 * H + i];
-                back_dbh[i] += dar[j * 3 * H + i];
-            }
+        for(i = N * H; i < D * N * H; ++i){
+            dhx[i] = dht1[i];
         }
     }
-    //} 
-    // dxt = da * wx.T    [T*N,I] = [T*N,3H] * [3H,I]
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, T*N, I, 3 * H, 1, 
-      da, 3 * H, back_wx, 3 * H, 1, dx, I);
-
-    // dwx = xt.T * da    [I,3H] = [I,N] * [N,3H]
-    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, I, 3 * H, T*N, 1, x, 
-      I, da, 3 * H, 0, back_dwx, 3 * H);
-    }
-
-    #pragma omp parallel for
-    for(i = 0; i < D * N * H; ++i){
-        dhx[i] = dht1[i];
-    }
-    //memcpy(dhx, dht1, N * H * D * sizeof(float));
 
 }
 
+int tid = 0;
+void gru_xw_single_bwd(int T, int D, int N, int I, int H,
+            float* x,  //[T,N,I]
+            float* hx, //[D*N,H]
+            float* y,  //[T,N,D,H]
+            float* wx, //[I,3H]
+            float* wh, //[H,3H]
+            float* dwx, //[I,3H]
+            float* dwh, //[H,3H]
+            float* dx,  //[T,N,I]
+            float* dhx, //[D,N,H]
+            float* dbx, //[1,3H]
+            float* dbh,
+            float* dy, //[T,N,D,H] 
+            float* dhy, //[D,N,H] 
+            float* gateR, //[T,D,N,H]
+            float* gateZ, //[T,D,N,H]
+            float* gateN, //[T,D,N,H]
+            float* Mnh, //[D,T,N,H]
+            float* ws //D * (N*3H + N*H + N*H)
+            )
+{
+
+    pthread_t thread1, thread2;
+    int err1 = 0;
+    int err2 = 0;
+    BwdThreadPara* para1 = NULL;
+    BwdThreadPara* para2 = NULL;
+    para1 = (BwdThreadPara*)malloc(sizeof(BwdThreadPara));
+    para1->T = T;
+    para1->D = D;
+    para1->N = N;
+    para1->I = I;
+    para1->H = H;
+    para1->x = x;
+    para1->hx = hx;
+    para1->wx = wx;
+    para1->wh = wh;
+    para1->y = y;
+    para1->dwx = dwx;
+    para1->dwh = dwh;
+    para1->dx = dx;
+    para1->dhx = dhx;
+    para1->dbx = dbx;
+    para1->dbh = dbh;
+    para1->dy = dy;
+    para1->dhy = dhy;
+    para1->gateR = gateR;
+    para1->gateZ = gateZ;
+    para1->gateN = gateN;
+    para1->Mnh = Mnh;
+    para1->ws = ws;
+    para1->d = 0;
+
+    //get threadid from ws
+    //thread1 = (pthread_t) ws;
+
+    // if threadid is not avaliable, create the thread
+
+    err1 = pthread_create(&thread1, NULL, bwd_thread_one_direction, para1);
+    // create thread for ud
+    if(D ==2){
+        para2 = (BwdThreadPara*)malloc(sizeof(BwdThreadPara));
+        memcpy(para2, para1, sizeof(BwdThreadPara));
+        para2->d = 1;
+        err2 = pthread_create(&thread2, NULL, bwd_thread_one_direction, para2);
+    }
+    // wait for the threat job done, children thread alwasy running
+    if(err1 | err2){
+        printf("error in creating thread \n");
+    }
+    err1 = pthread_join(thread1, NULL);                                         
+    if(D == 2){
+        err2 = pthread_join(thread2, NULL);                                         
+    }
+    if (err1 | err2){                                                           
+        printf("error in joining thread \n");                                   
+    }
+    free(para1);
+    if(D == 2){
+        free(para2);
+    }
+}
 /*
  * @brief:  gru_xw_seq_backward
  *          multi-layer backward computation 
@@ -815,15 +967,15 @@ void gru_xw_seq_bwd(int L, int T, int D, int N, int I, int H,
  *             gemmC2 [D,N,3H]
  *
  *             TEMP for BACKWARD
- *             dar  [T,N,3H]
- *             da   [T,N,3H]
+ *             dar  [D,T,N,3H]
+ *             da   [D,T,N,3H]
  *             dht1 [D,N,H]
  *             hx_  [N,D,H]
  *
  */ 
 int gru_xw_train_get_workspace_size(int L, int D, int T, int N, int I, int H)
 {
-    return WS_THREAD + 5 * L * T * D * N * H + 7 * N * H + 2 * T * N * 3 * H;
+    return WS_THREAD + 5 * L * T * D * N * H + 7 * N * H + 2 * D * T * N * 3 * H;
 }
 
 /*

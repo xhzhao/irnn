@@ -118,13 +118,9 @@ def compare_parameter_grad(opt_rnn, ori_rnn, bidirectional, bias, param_index):
         forward_equal = np.allclose(opt_param_forward, ori_param_forward_transpose)
         backward_equal = np.allclose(opt_param_backward, ori_param_backward_transpose)
 
-        if forward_equal is False:
-            print('forward weight grad check fail')
-            # print('ori: \n', ori_param_tuple[0].grad.data.numpy())
-            # print('===========================================================')
-            # print('opt: \n', opt_param.grad.data.numpy())
-        if backward_equal is False:
-            print('backward weight grad check fail')
+        if (forward_equal and backward_equal) == False:
+            print("        weight index = %d, ori_sum_f = %.4f, opt_sum_f = %.4f" % ( param_index, ori_param_forward_transpose.sum(), opt_param_forward.sum()))
+            print("        weight index = %d, ori_sum_b = %.4f, opt_sum_b = %.4f" % ( param_index, ori_param_backward_transpose.sum(), opt_param_backward.sum()))
         
         return forward_equal and backward_equal
     else:
