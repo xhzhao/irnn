@@ -179,18 +179,21 @@ void* fwd_thread_one_direction(void * p){
         mkl_set_num_threads_local(20);
         omp_set_num_threads(20);
     }
-
-    if(d == 0){
+#if 0
         //bind pthread to socket2
         if(D ==2){
             cpu_set_t cpuset;
             pthread_t thread = pthread_self();
             CPU_ZERO(&cpuset);
-            for (int i = 20; i < 40; i++){
+            //CPU_SET(0, &cpuset);
+            for (int i = (1-d) * 20; i < (1-d) * 20 + 20; i++){
                 CPU_SET(i, &cpuset);
             }
             pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
         }
+#endif
+
+    if(d == 0){
 
         #pragma omp parallel for collapse(2)
         for (int i = 0; i < N; i++){
@@ -223,14 +226,7 @@ void* fwd_thread_one_direction(void * p){
             }
         }
     } else if(d == 1){
-        cpu_set_t cpuset;
-        pthread_t thread = pthread_self();
-        CPU_ZERO(&cpuset);
-        for (int i = 0; i < 20 ; i++){
-            CPU_SET(i, &cpuset);
-        }
-        pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-        #pragma omp parallel for collapse(2)
+       #pragma omp parallel for collapse(2)
         for (int i = 0; i < N; i++){
             for (int j = 0; j < H; j++) {
                 back_ht_1[i *D * H + j] = hx[N * H + i * H + j];
@@ -591,17 +587,21 @@ void* bwd_thread_one_direction(void * p){
         mkl_set_num_threads_local(20);
         omp_set_num_threads(20);
     }
-
-    if(d == 0){
+#if 0
+        //bind pthread to socket2
         if(D ==2){
             cpu_set_t cpuset;
             pthread_t thread = pthread_self();
             CPU_ZERO(&cpuset);
-            for (int i = 20; i < 40; i++){
+            //CPU_SET(0, &cpuset);
+            for (int i = (1-d) * 20; i < (1-d) * 20 + 20; i++){
                 CPU_SET(i, &cpuset);
             }
             pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
         }
+#endif
+
+    if(d == 0){
         #pragma omp parallel for
         for(i = 0; i <  H * 3 * H; ++i){
             dwh[i]=0;
@@ -621,15 +621,6 @@ void* bwd_thread_one_direction(void * p){
             }
         }
     }else if(d == 1){
-        if(D ==2){
-            cpu_set_t cpuset;
-            pthread_t thread = pthread_self();
-            CPU_ZERO(&cpuset);
-            for (int i = 0; i < 20; i++){
-                CPU_SET(i, &cpuset);
-            }
-            pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-        }
         #pragma omp parallel for
         for(i = H * 3 * H; i < D * H * 3 * H; ++i){
             dwh[i]=0;
