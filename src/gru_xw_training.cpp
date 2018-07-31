@@ -17,6 +17,62 @@
 //#define WS_THREAD  (64*6+16)  //394, 2 * 8 for threadid, 192 * 2 for message
 #define WS_THREAD  0  //394, 2 * 8 for threadid, 192 * 2 for message
 
+int fwd_todo = 0;
+int bwd_todo = 0;
+pthread_t threads[4] = {NULL,NULL,NULL,NULL};
+pthread_mutex_t locks[4] = {PTHREAD_MUTEX_INITIALIZER,PTHREAD_MUTEX_INITIALIZER,PTHREAD_MUTEX_INITIALIZER,PTHREAD_MUTEX_INITIALIZER};
+pthread_cond_t ready_cond[4] = {PTHREAD_COND_INITIALIZER,PTHREAD_COND_INITIALIZER,PTHREAD_COND_INITIALIZER,PTHREAD_COND_INITIALIZER};
+pthread_barrier_t done_barrier[2]; //forward or backeard
+
+typedef struct fwd_thread_para{
+    int T;
+    int D;
+    int N;
+    int I;
+    int H;
+    float* x;
+    float* hx;
+    float* wx;
+    float* wh;
+    float* bx;
+    float* bh;
+    float* y;
+    float* hy;
+    float* gateR;
+    float* gateZ;
+    float* gateN;
+    float* Mnh;
+    float* ws;
+    int d;
+}FwdThreadPara;
+FwdThreadPara fwdThreadPara[2];
+typedef struct bwd_thread_para{
+    int T;
+    int D;
+    int N;
+    int I;
+    int H;
+    float* x;
+    float* hx;
+    float* wx;
+    float* wh;
+    float* y;
+    float* dwx;
+    float* dwh;
+    float* dx;
+    float* dhx;
+    float* dbx;
+    float* dbh;
+    float* dy;
+    float* dhy;
+    float* gateR;
+    float* gateZ;
+    float* gateN;
+    float* Mnh;
+    float* ws;
+    int d;
+}BwdThreadPara;
+BwdThreadPara bwdThreadPara[2];
 double get_time(void)
 {
 #if 1
@@ -96,41 +152,27 @@ void elemwise_opt(int D, int N, int H, float* rt, float* nt, float* zt,
 
 }
 
-typedef struct fwd_thread_para{
-    int T;
-    int D;
-    int N;
-    int I;
-    int H;
-    float* x;
-    float* hx;
-    float* wx;
-    float* wh;
-    float* bx;
-    float* bh;
-    float* y;
-    float* hy;
-    float* gateR;
-    float* gateZ;
-    float* gateN;
-    float* Mnh;
-    float* ws;
-    int d;
-}FwdThreadPara;
+
 
 
 #define COUNT 1
-void* fwd_thread_one_direction(void * p){
+void* fwd_thread_one_direction(void * ptr_d){
 
-    FwdThreadPara* para = (FwdThreadPara*)p;
+    int d = *((int*)ptr_d);
+    //printf("fwd_thread_one_direction start, d = %d \n", d);
+    while(1){
+    pthread_mutex_lock(locks+d);
+    while(fwd_todo == 0){
+        //printf("waiting for a signal, d = %d\n", d);
+        pthread_cond_wait(ready_cond+d, locks+d);
+    }
+    //printf("fwd_thread_one_direction start, d = %d, lock done\n", d);
+    FwdThreadPara* para = fwdThreadPara + d;
     int T = para->T;
     int D = para->D;
     int N = para->N;
     int I = para->I;
     int H = para->H;
-    int d = para->d;
-    double start = get_time();
-    for(int c =0; c < COUNT; c++){
 
     float* x = para->x;
     float* hx = para->hx;
@@ -179,6 +221,7 @@ void* fwd_thread_one_direction(void * p){
         mkl_set_num_threads_local(20);
         omp_set_num_threads(20);
     }
+
 #if 0
         //bind pthread to socket2
         if(D ==2){
@@ -226,7 +269,7 @@ void* fwd_thread_one_direction(void * p){
             }
         }
     } else if(d == 1){
-       #pragma omp parallel for collapse(2)
+        #pragma omp parallel for collapse(2)
         for (int i = 0; i < N; i++){
             for (int j = 0; j < H; j++) {
                 back_ht_1[i *D * H + j] = hx[N * H + i * H + j];
@@ -255,6 +298,14 @@ void* fwd_thread_one_direction(void * p){
             }
         }
     }
+
+    fwd_todo = 0;
+    pthread_mutex_unlock(locks+d);
+
+    pthread_barrier_wait(done_barrier);
+    //ready_cond[d] = PTHREAD_COND_INITIALIZER;
+    //printf("fwd_thread_one_direction start, d = %d, unlock done, fwd_todo = %d\n", d, fwd_todo);
+
     }
 #if 0
     double dura = (get_time() - start) /1e3;                                                  
@@ -318,9 +369,8 @@ void gru_forward_single_sequential(int T, int D, int N, int I, int H,
     pthread_t thread1, thread2;
     int err1 = 0;
     int err2 = 0;
-    FwdThreadPara* para1 = NULL;
-    FwdThreadPara* para2 = NULL;
-    para1 = (FwdThreadPara*)malloc(sizeof(FwdThreadPara));
+    FwdThreadPara* para1 = fwdThreadPara;
+    FwdThreadPara* para2 = fwdThreadPara + 1;
     para1->T = T;
     para1->D = D;
     para1->N = N;
@@ -341,34 +391,38 @@ void gru_forward_single_sequential(int T, int D, int N, int I, int H,
     para1->ws = ws;
     para1->d = 0;
 
-    //get threadid from ws
-    //thread1 = (pthread_t) ws;
+    int d0 = 0;
+    int d1 = 1;
 
-    // if threadid is not avaliable, create the thread
+    fwd_todo = 1;
+    if (threads[0] == NULL){
+        // if threadid is not avaliable, create the thread
+        pthread_barrier_init(done_barrier, NULL, D + 1);
+        err1 = pthread_create(&thread1, NULL, fwd_thread_one_direction, &d0);
+        // create thread for ud
+        if(D ==2){
+            err2 = pthread_create(&thread2, NULL, fwd_thread_one_direction, &d1);
+        }
+        //save the pthread to global buffer
+        threads[0] = thread1;
+        threads[1] = thread2;
+    }
 
-    err1 = pthread_create(&thread1, NULL, fwd_thread_one_direction, para1);
-    // create thread for ud
-    if(D ==2){
-        para2 = (FwdThreadPara*)malloc(sizeof(FwdThreadPara));
+    // enable the worker to go
+    pthread_mutex_lock(locks);
+    pthread_cond_signal(ready_cond);
+    pthread_mutex_unlock(locks);
+
+    if(D == 2){
         memcpy(para2, para1, sizeof(FwdThreadPara));
         para2->d = 1;
-        err2 = pthread_create(&thread2, NULL, fwd_thread_one_direction, para2);
+        pthread_mutex_lock(locks + 1);
+        pthread_cond_signal(ready_cond + 1);
+        pthread_mutex_unlock(locks + 1);
     }
-    // wait for the threat job done, children thread alwasy running
-    if(err1 | err2){
-        printf("error in creating thread \n");
-    }
-    err1 = pthread_join(thread1, NULL);                                         
-    if(D == 2){
-        err2 = pthread_join(thread2, NULL);                                         
-    }
-    if (err1 | err2){                                                           
-        printf("error in joining thread \n");                                   
-    }
-    free(para1);
-    if(D == 2){
-        free(para2);
-    }
+
+    // wait for the worker done
+    pthread_barrier_wait(done_barrier);
 
 }
 
@@ -490,35 +544,18 @@ void gru_xw_seq_forward(int L, int T, int D, int N, int I, int H,
  *            dbrx = dbrh = sum(dar,axis=0)
  */
 
-typedef struct bwd_thread_para{
-    int T;
-    int D;
-    int N;
-    int I;
-    int H;
-    float* x;
-    float* hx;
-    float* wx;
-    float* wh;
-    float* y;
-    float* dwx;
-    float* dwh;
-    float* dx;
-    float* dhx;
-    float* dbx;
-    float* dbh;
-    float* dy;
-    float* dhy;
-    float* gateR;
-    float* gateZ;
-    float* gateN;
-    float* Mnh;
-    float* ws;
-    int d;
-}BwdThreadPara;
 
-void* bwd_thread_one_direction(void * p){
-    BwdThreadPara* para = (BwdThreadPara*)p;
+
+void* bwd_thread_one_direction(void * ptr_d){
+    int d = *((int*)ptr_d);
+    while(1){
+    pthread_mutex_lock(locks + 2 + d);
+    while(bwd_todo == 0){
+        //printf("bwd_thread_one_direction, waiting for a signal, d = %d\n", d);
+        pthread_cond_wait(ready_cond + 2 + d, locks + 2 + d);
+    }
+    //printf("bwd_thread_one_direction start, d = %d, lock done\n", d);
+    BwdThreadPara* para = bwdThreadPara + d;
     int T = para->T;
     int D = para->D;
     int N = para->N;
@@ -780,10 +817,17 @@ void* bwd_thread_one_direction(void * p){
             dhx[i] = dht1[i];
         }
     }
+    bwd_todo = 0;
+    pthread_mutex_unlock(locks + 2 + d);
+
+    pthread_barrier_wait(done_barrier + 1);
+    //ready_cond[2 + d] = PTHREAD_COND_INITIALIZER;
+    }
 
 }
 
-int tid = 0;
+
+
 void gru_xw_single_bwd(int T, int D, int N, int I, int H,
             float* x,  //[T,N,I]
             float* hx, //[D*N,H]
@@ -809,9 +853,8 @@ void gru_xw_single_bwd(int T, int D, int N, int I, int H,
     pthread_t thread1, thread2;
     int err1 = 0;
     int err2 = 0;
-    BwdThreadPara* para1 = NULL;
-    BwdThreadPara* para2 = NULL;
-    para1 = (BwdThreadPara*)malloc(sizeof(BwdThreadPara));
+    BwdThreadPara* para1 = bwdThreadPara;
+    BwdThreadPara* para2 = bwdThreadPara + 1;
     para1->T = T;
     para1->D = D;
     para1->N = N;
@@ -837,34 +880,38 @@ void gru_xw_single_bwd(int T, int D, int N, int I, int H,
     para1->ws = ws;
     para1->d = 0;
 
-    //get threadid from ws
-    //thread1 = (pthread_t) ws;
+    bwd_todo = 1;
+    int d0 = 0;
+    int d1 = 1;
+    if (threads[2] == NULL){
+        // if threadid is not avaliable, create the thread
+        pthread_barrier_init(done_barrier + 1, NULL, D + 1);
+        err1 = pthread_create(&thread1, NULL, bwd_thread_one_direction, &d0);
+        // create thread for ud
+        if(D ==2){
+            err2 = pthread_create(&thread2, NULL, bwd_thread_one_direction, &d1);
+        }
+        //save the pthread to global buffer
+        threads[2] = thread1;
+        threads[3] = thread2;
+    }
+    // enable the worker to go
+    pthread_mutex_lock(locks + 2);
+    pthread_cond_signal(ready_cond + 2);
+    pthread_mutex_unlock(locks + 2);
 
-    // if threadid is not avaliable, create the thread
-
-    err1 = pthread_create(&thread1, NULL, bwd_thread_one_direction, para1);
-    // create thread for ud
-    if(D ==2){
-        para2 = (BwdThreadPara*)malloc(sizeof(BwdThreadPara));
+    if(D == 2){
         memcpy(para2, para1, sizeof(BwdThreadPara));
         para2->d = 1;
-        err2 = pthread_create(&thread2, NULL, bwd_thread_one_direction, para2);
+        pthread_mutex_lock(locks + 3);
+        pthread_cond_signal(ready_cond + 3);
+        pthread_mutex_unlock(locks + 3);
     }
-    // wait for the threat job done, children thread alwasy running
-    if(err1 | err2){
-        printf("error in creating thread \n");
-    }
-    err1 = pthread_join(thread1, NULL);                                         
-    if(D == 2){
-        err2 = pthread_join(thread2, NULL);                                         
-    }
-    if (err1 | err2){                                                           
-        printf("error in joining thread \n");                                   
-    }
-    free(para1);
-    if(D == 2){
-        free(para2);
-    }
+
+    // wait for the worker done
+    pthread_barrier_wait(done_barrier + 1);
+
+
 }
 /*
  * @brief:  gru_xw_seq_backward
