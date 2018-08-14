@@ -14,10 +14,11 @@ extern "C"{
 
     float * getTHBuffer(THFloatTensor * input)
     {
-        if(input == NULL || input->size == 0){
+        if(input == NULL) { // || THFloatTensor_size(input) == 0){
             return NULL;
         }else{
-            return ((float *)(input->storage->data + input->storageOffset));
+            //return ((float *)(input->storage->data + input->storageOffset));
+            return (float *)THFloatTensor_data(input);
         }
     }
 

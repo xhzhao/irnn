@@ -43,8 +43,7 @@ def get_workspace_size(mode, train, L, bidirectional , T, N, I, H):
         mode_int = 3
     train_int = 1 if train else 2
     D = 2 if bidirectional else 1
-    workspace_size = pytorch_get_workspace_size(mode_int, train_int, L, D, T, N, I, H)
-    #print("workspace_size = %d"% workspace_size)
+    workspace_size = pytorch_get_workspace_size(mode_int, train_int, int(L), int(D), int(T), int(N), int(I), int(H))
     return workspace_size
 
 class GRUFunc(Function):
@@ -61,8 +60,8 @@ class GRUFunc(Function):
         self.D = 2 if bidirectional else 1
         self.dropout_state = dropout_state
     def forward(self, ws, x, hx, wx, wh, bx, bh):
-        self.T = x.size(0)
-        self.N = x.size(1)
+        self.T = int(x.size(0))
+        self.N = int(x.size(1))
         self.ws = ws
         self.x  = x
         self.hx = hx
@@ -115,8 +114,9 @@ class LSTMFunc(Function):
         self.dropout_state = dropout_state
     def forward(self, ws, x, hx, cx, wx, wh, bx, bh):
         #get seq_length from input
-        self.T = x.size(0)
-        self.N = x.size(1)
+        self.T = int(x.size(0))
+        self.N = int(x.size(1))
+
         self.ws = ws
         self.x  = x
         self.hx = hx
