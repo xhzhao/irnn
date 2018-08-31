@@ -17,3 +17,7 @@
     make
     cd ../pytorch_binding
     python setup.py install
+
+### Contributer
+****
+Thanks your contribution from qidu he and shu zhang.
